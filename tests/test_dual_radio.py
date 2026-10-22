@@ -23,7 +23,9 @@ elif cmd.endswith('+CPIN?'):print('+CPIN: READY' if slot in s.get('present',[0,1
 elif cmd.endswith('+SPTESTMODE?'):print('+SPTESTMODE: 134,128,1,20,3,1')
 elif cmd.endswith('+SPSWDATA?'):print('+SPSWDATA: '+str(s['data']))
 elif cmd.endswith('+SPSWDATA'):s['data']=slot
-elif cmd.endswith('+SFUN=4'):s['cfun'][slot]=1
+elif cmd.endswith('+SFUN=4'):
+ if os.getenv('FAIL_RESUME')=='1':print('ERROR');sys.exit(1)
+ s['cfun'][slot]=1
 elif cmd.endswith('+SFUN=2'):s['cfun'][slot]=0
 elif cmd.endswith('+SFUN=5'):s['cfun'][slot]=int(os.getenv('OFF_STATE','2'))
 f.write_text(json.dumps(s));print('OK')
@@ -66,6 +68,48 @@ f.write_text(json.dumps(s));print('OK')
                 self.assertEqual(r.returncode==0,ok,r.stderr)
                 if not ok: self.assertEqual(r.returncode,4)
                 self.assertNotIn('SFUN=',(self.tmp/'commands').read_text())
+
+    def test_initialized_mixed_state_resumes_only_the_requested_off_radio(self):
+        for shell in self.each_shell():
+            for cfun in ([1,0],[0,1],[1,2],[2,1],[1,4]):
+                self.reset(cfun)
+                (self.tmp/'sim-radio-policy').write_text('1 1\n')
+                (self.run/'mu300-dual-radio-ready').touch()
+                r=self.script(shell,SCRIPT,**self.extra)
+                self.assertEqual(r.returncode,0,r.stderr)
+                self.assertEqual(json.loads((self.tmp/'radio.json').read_text())['cfun'],[1,1])
+                writes=[c for c in (self.tmp/'commands').read_text().splitlines() if not c.endswith('?')]
+                off=0 if cfun[0]!=1 else 1
+                self.assertEqual(writes,[f'AT+SPACTCARD={off};+SFUN=4'])
+
+    def test_initialized_resume_keeps_disabled_or_absent_peer_off(self):
+        for shell in self.each_shell():
+            self.reset([0,0])
+            (self.tmp/'sim-radio-policy').write_text('1 0\n')
+            (self.run/'mu300-dual-radio-ready').touch()
+            r=self.script(shell,SCRIPT,**self.extra)
+            self.assertEqual(r.returncode,0,r.stderr)
+            self.assertEqual(json.loads((self.tmp/'radio.json').read_text())['cfun'],[1,0])
+            self.assertNotIn('AT+SPACTCARD=1;+SFUN',(self.tmp/'commands').read_text())
+            self.reset([0,1])
+            (self.tmp/'radio.json').write_text(json.dumps(dict(cfun=[0,1],data=1,present=[1])))
+            (self.tmp/'sim-radio-policy').write_text('1 1\n')
+            (self.run/'mu300-dual-radio-ready').touch()
+            r=self.script(shell,SCRIPT,**self.extra)
+            self.assertEqual(r.returncode,0,r.stderr)
+            self.assertNotIn('SFUN=',(self.tmp/'commands').read_text())
+
+    def test_initialized_resume_failure_does_not_reset_or_select_another_card(self):
+        for shell in self.each_shell():
+            self.reset([0,1])
+            (self.tmp/'sim-radio-policy').write_text('1 1\n')
+            (self.run/'mu300-dual-radio-ready').touch()
+            r=self.script(shell,SCRIPT,**dict(self.extra,FAIL_RESUME='1'))
+            self.assertNotEqual(r.returncode,0)
+            self.assertIn('radio-on rejected',r.stderr)
+            self.assertEqual(json.loads((self.tmp/'radio.json').read_text())['cfun'],[0,1])
+            writes=[c for c in (self.tmp/'commands').read_text().splitlines() if not c.endswith('?')]
+            self.assertEqual(writes,['AT+SPACTCARD=0;+SFUN=4'])
 
     def test_no_urc_reader_means_no_at_traffic(self):
         for shell in self.each_shell():

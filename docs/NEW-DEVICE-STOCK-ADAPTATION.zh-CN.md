@@ -7,6 +7,9 @@
 U30 Air 网页充电控制另见 [接口、机型隔离与测试记录](U30AIR-WEB-CHARGING-20261016.zh-CN.md)。
 先检查已有驱动的可写控制接口，不复制 Android 专有 sysfs 路径，不用 inotify 冒充 SOC 事件。
 
+充电 CV/硬件计时器另见 [提前停充原厂对照](U30AIR-CHARGING-EARLY-FULL-20261022.zh-CN.md)。
+使用本机 battery-info 和原厂初始化证据；不要把某次寄存器电压快照当成固定充电上限。
+
 ## 先识别机器与原厂基线
 
 1. 保存型号、板号、Android 内核版本、原厂 DT/DTBO、模块哈希、实际启动槽和根分区类型。

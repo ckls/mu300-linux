@@ -2,6 +2,7 @@
 import json
 import re
 import fcntl
+import os
 from helpers import ShellTest, TOP
 
 SCRIPT=TOP/'rootfs/overlay/opt/mu300/bin/mu300-sim-radio'
@@ -28,13 +29,20 @@ n=int(re.search(r"SPACTCARD=(\\d)",cmd)[1])
 if "SFUN=" in cmd:
  if os.getenv("FAIL_RF")=="1":print("ERROR");sys.exit(1)
  s[n]=1 if cmd.endswith("=4") else int(os.getenv("OFF_STATE","2"));p.write_text(json.dumps(s))
-elif cmd.endswith("+CPIN?"): print("+CPIN: READY" if os.getenv("SIM_POWERED")=="1" else "+CME ERROR: 10")
+elif cmd.endswith("+CPIN?"):
+ delay=r/"pin-delay"
+ if os.getenv("PIN_FIRST_BUSY")=="1" and not delay.exists():
+  delay.touch();print("+CME ERROR: 14")
+ else: print("+CPIN: READY" if os.getenv("SIM_POWERED")=="1" else "+CME ERROR: 10")
+elif cmd.endswith("+SPSWDATA?"): print("+SPSWDATA: 0")
 else: print("+CFUN: "+str(s[n]))
 print("OK")' "$@"''')
         self.stub('mobile-data', '''printf '%s\n' "$*" >> "$STUBLOG/mobile"
 case $1 in
  radio-policy) exec sh "$CONTROLLER" --locked "$2" "$3";;
- radio-on) printf '[1,2]' > "$STUBLOG/state";;
+ radio-on)
+  if [ -n "${DUAL_CONTROLLER:-}" ]; then exec sh "$DUAL_CONTROLLER"; fi
+  printf '[1,2]' > "$STUBLOG/state";;
  *) exit 2;;
 esac''')
         self.controller=self.tmp/'controller'
@@ -123,6 +131,26 @@ esac''')
             result=self.call(shell,'apply','0','0')
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertFalse((self.tmp/'at').exists())
+
+    def test_busy_pin_during_rf_resume_does_not_reject_initialized_live_peer(self):
+        root=self.tmp/'dual-run'
+        for directory,n in [('mu300-at',0),('mu300-at4',3)]:
+            stream=root/directory/'urc';stream.mkdir(parents=True)
+            (stream/f'stty_nr{n}.ready').write_text(str(os.getpid()))
+        (root/'mu300-dual-radio-ready').touch()
+        for shell in self.each_shell():
+            (self.tmp/'state').write_text('[0,1]')
+            (self.tmp/'sim-radio-policy').write_text('0 1\n')
+            (self.tmp/'pin-delay').unlink(missing_ok=True)
+            (self.tmp/'at').unlink(missing_ok=True)
+            result=self.call(shell,'apply','0','1',SIM_POWERED='1',PIN_FIRST_BUSY='1',
+                DUAL_CONTROLLER=TOP/'rootfs/overlay/opt/mu300/bin/mu300-dual-radio',
+                MU300_DUAL_RUN=root,MU300_DUAL_AT_CLIENT=self.stubs/'mu300-at')
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(json.loads((self.tmp/'state').read_text()),[1,1])
+            writes=[c for c in (self.tmp/'at').read_text().splitlines() if not c.endswith('?')]
+            self.assertEqual(writes,['AT+SPACTCARD=0;+SFUN=4'])
+            self.assertEqual((self.tmp/'sim-radio-policy').read_text(),'1 1\n')
 
     def test_sfun_off_zero_and_two_reenable_without_resetting_powered_sim(self):
         for shell in self.each_shell():

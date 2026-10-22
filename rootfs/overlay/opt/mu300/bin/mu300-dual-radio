@@ -72,6 +72,26 @@ if { [ "$present0" = 0 ] || { [ "$allowed0:$cf0" = 1:1 ] || { [ "$allowed0" = 0 
     case "$actual" in 0|1) printf '%s\n' "$actual" > "$root/mu300-data-sim-actual" ;; *) fail 'data SIM readback unavailable' ;; esac
     : > "$root/mu300-dual-radio-ready"; exit 0
 fi
+# After this boot's dual initialization, a mixed RF state is a normal
+# per-card off/on transition, not a reason to repeat cold initialization.
+# Resume only permitted, present cards; never power-cycle the live peer.
+# A genuinely cold mixed state without the ready marker remains rejected.
+if [ -e "$root/mu300-dual-radio-ready" ]; then
+    for card in 0 1; do
+        present "$card" && allowed "$card" || continue
+        if [ "$card" = 0 ]; then state=$cf0; else state=$cf1; fi
+        case "$state" in
+            1) continue ;;
+            0|2|4) ;;
+            *) fail "SIM $card radio state unreadable" ;;
+        esac
+        ok "$card" 'AT+SFUN=4' 20 || fail "SIM $card radio-on rejected"
+        [ "$(cfun "$card")" = 1 ] || fail "SIM $card radio-on readback mismatch"
+    done
+    actual=$(query 0 'AT+SPSWDATA?' | sed -n 's/^+SPSWDATA: *\([01]\)$/\1/p')
+    case "$actual" in 0|1) printf '%s\n' "$actual" > "$root/mu300-data-sim-actual" ;; *) fail 'data SIM readback unavailable' ;; esac
+    exit 0
+fi
 check0=$cf0; check1=$cf1
 [ "$allowed0:$check0" != 0:2 ] || check0=0
 [ "$allowed1:$check1" != 0:2 ] || check1=0

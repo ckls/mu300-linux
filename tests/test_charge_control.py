@@ -118,6 +118,17 @@ class ChargeControl(unittest.TestCase):
         full=self.call('apply')
         self.assertFalse(full['full_once']);self.assertTrue(full['stopped'])
 
+    def test_early_hardware_full_is_not_the_user_limit(self):
+        # A charger reporting Full below the configured SOC threshold must
+        # not become a policy-owned stop or clear a one-time full request.
+        self.write(self.battery/'capacity',84)
+        self.write(self.charger/'status','Full')
+        result=self.call('configure',dict(enabled='1',start='70',stop='90'))
+        self.assertFalse(result['stopped'])
+        self.assertEqual((self.charger/'charge_type').read_text().strip(),'Fast')
+        self.assertFalse(self.call('full_once')['stopped'])
+        self.assertTrue(self.call('apply')['full_once'])
+
     def test_disable_limit_releases_owned_pause(self):
         self.write(self.battery/'capacity',90)
         self.configure()
