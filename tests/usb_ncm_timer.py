@@ -27,8 +27,8 @@ with tempfile.TemporaryDirectory(prefix='ncm-timer-test-') as directory:
     else:
         patch = here.parent/'upstream/patches/0025-usb-ncm-retry-busy-timer-flush.patch'
         args = ['patch', '-p1', '--batch', '-i', str(patch)]
-        if subprocess.run(args+['--dry-run'], cwd=root, capture_output=True).returncode == 0:
-            subprocess.run(args, cwd=root, check=True)
+        if subprocess.run(args+['--forward', '--dry-run'], cwd=root, capture_output=True).returncode == 0:
+            subprocess.run(args+['--forward'], cwd=root, check=True)
         else:
             # The normal kernel build has already applied this patch.
             subprocess.run(args+['-R', '--dry-run'], cwd=root, check=True,
