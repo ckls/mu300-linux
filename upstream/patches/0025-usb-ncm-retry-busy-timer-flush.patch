@@ -1,0 +1,26 @@
+From: local backport
+Subject: usb: gadget: f_ncm: retry a timer flush when USB TX is busy
+
+Based on Cosmin Tanislav's linux-usb patch, 2026-08-17:
+https://lore.kernel.org/linux-usb/20260817192638.437798-1-cosmin-gabriel.tanislav.xa@renesas.com/
+
+A timer-originated flush has no qdisc to requeue NETDEV_TX_BUSY. Keep the
+existing 300us deadline and retry instead of leaving the NTB stranded.
+Advance the expiration before HRTIMER_RESTART to avoid an expired-timer
+busy loop. Existing small-frame flushing, aggregation and USB PM stay intact.
+
+--- a/drivers/usb/gadget/function/f_ncm.c
++++ b/drivers/usb/gadget/function/f_ncm.c
+@@ -1158,7 +1158,11 @@
+ 		 *
+ 		 * This will call directly into u_ether's eth_start_xmit()
+ 		 */
+-		netdev->netdev_ops->ndo_start_xmit(NULL, netdev);
++		/* A timer flush has no qdisc to retry a busy USB request. */
++		if (netdev->netdev_ops->ndo_start_xmit(NULL, netdev) == NETDEV_TX_BUSY) {
++			hrtimer_forward_now(data, TX_TIMEOUT_NSECS);
++			return HRTIMER_RESTART;
++		}
+ 	}
+ 	return HRTIMER_NORESTART;
+ }

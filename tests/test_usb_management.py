@@ -420,12 +420,17 @@ esac
 class USBIntegration(unittest.TestCase):
     def test_tf_early_policy_precedes_gadget_enumeration(self):
         init = (TOP / 'boot/init').read_text()
-        self.assertLess(init.index('stage=sd-scan dev='),
-                        init.index('[ "$root_mounted" = 1 ] && read_usb_boot_policy\nsetup_usb_gadget'))
-        self.assertLess(init.index('stage=sd-root dev='),
-                        init.index('[ "$root_mounted" = 1 ] && read_usb_boot_policy\nsetup_usb_gadget'))
-        self.assertLess(init.index('[ "$root_mounted" = 1 ] && read_usb_boot_policy\nsetup_usb_gadget'),
-                        init.index('if [ "$root_mounted" = 0 ] && [ "$root_target" != sd ]; then'))
+        # Independent GPT roots now mount before policy lookup, too. Desktop
+        # recovery can already own the gadget; normal boot must still read the
+        # mounted root's USB policy before its conditional first enumeration.
+        policy = init.index('[ "$root_mounted" = 1 ] && read_usb_boot_policy\n')
+        enumeration = init.index('[ "${DESKTOP_USB_READY:-}" = 1 ] || setup_usb_gadget\n')
+        self.assertLess(init.index('stage=sd-scan dev='), policy)
+        self.assertLess(init.index('stage=sd-root dev='), policy)
+        self.assertLess(init.index('stage=root-part dev='), policy)
+        self.assertLess(policy, enumeration)
+        self.assertLess(enumeration,
+                        init.index('if [ "$root_mounted" = 0 ] && [ "$internal_root" = 1 ] && root_region_valid'))
         self.assertIn('/disk/openwrt/etc/unisoc-modem/usb-boot.conf', init)
         self.assertIn('/run/unisoc-usb-net-applied', init)
 
