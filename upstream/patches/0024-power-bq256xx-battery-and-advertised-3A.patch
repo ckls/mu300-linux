@@ -1,0 +1,59 @@
+power: supply: bq256xx: allow the requested 3 A within battery/source limits
+
+Only the isolated vendor battery path initializes the local battery current
+(up to 3 A and the charger capability); missing battery info retains 1.98 A.
+A source advertising Type-C 3 A can now supply 3 A instead of being capped
+to 2 A. BC1.2 SDP/CDP/DCP budgets, CV, termination, timer and thermal bits
+are unchanged. No boost, SOC, NV, new polling or force-recharge changes.
+
+--- a/drivers/power/supply/bq256xx_charger.c
++++ b/drivers/power/supply/bq256xx_charger.c
+@@ -161,7 +161,8 @@
+ #define BQ256XX_EN_TERM			BIT(7)	/* CHARGER_CONTROL_1 */
+ #define BQ256XX_IINDET_EN		BIT(7)	/* CHARGER_CONTROL_3: force input detection, clears when done */
+ #define BQ256XX_VBUS_STAT_NONSTD	(BIT(7) | BIT(6))
+-#define BQ2560X_CHG_ICHG_MAX_uA		1980000	/* what Android charges the U30 Air's 4050 mAh cell with */
++#define BQ2560X_CHG_ICHG_MAX_uA		3000000	/* user ceiling; still bounded by the local battery and chip */
++#define BQ2560X_CHG_ICHG_FALLBACK_uA	1980000	/* unknown battery information keeps the previous budget */
+ #define BQ2560X_CHG_EN_TIMER		BIT(3)	/* REG05: stock driver disables the hardware safety timer */
+ 
+ /*
+@@ -1770,7 +1771,7 @@
+  * Type-C block ("sprd,sc27xx-typec", typec@380 under the PMIC). It has no driver here, but its state machine runs by
+  * itself: STATUS bits 4:0 are the state (2: attached as a sink), bits 7:6 the source's Rp (0 default, 1 1.5 A,
+  * 2 3 A), as Unisoc's sc27xx_pd reads them. A hub or splitter with a charger behind it answers BC1.2 as an SDP
+- * (500 mA) but offers more through its Rp. 3 A is taken as 2 A, what a DCP gets here. 0 when there is no answer.
++ * (500 mA) but offers more through its Rp. 3 A is permitted only when the attached source advertises it. 0 when there is no answer.
+  * One register read through the PMIC's regmap, as sprd_pmic_detect_charger_type() does.
+  */
+ #define UMP9620_TYPEC_STATUS		0x1c
+@@ -1811,7 +1812,7 @@
+ 	case 1:
+ 		return 1500000;
+ 	case 2:
+-		return 2000000;
++		return 3000000;
+ 	default:
+ 		return 0;
+ 	}
+@@ -2022,7 +2023,11 @@
+ 	}
+ 
+ 	if (bq->bq2560x_chg) {
+-		bq->init_data.ichg_max = min_t(u32, bq->init_data.ichg_max, BQ2560X_CHG_ICHG_MAX_uA);
++		bq->init_data.ichg_max = min_t(u32,
++			(ret || bat_info->constant_charge_current_max_ua <= 0) ?
++			BQ2560X_CHG_ICHG_FALLBACK_uA :
++			bat_info->constant_charge_current_max_ua,
++			min_t(u32, BQ2560X_CHG_ICHG_MAX_uA, bq->chip_info->bq256xx_max_ichg));
+ 		/* A boot-time register snapshot is not the stock charging policy.
+ 		 * Use this battery's declared CV, bounded by the charger capability;
+ 		 * fall back to the chip default only when no valid value was supplied.
+@@ -2050,6 +2055,7 @@
+ 		return ret;
+ 
+ 	ret = bq->chip_info->bq256xx_set_ichg(bq,
++				bq->bq2560x_chg ? bq->init_data.ichg_max :
+ 				bq->chip_info->bq256xx_def_ichg);
+ 	if (ret)
+ 		return ret;

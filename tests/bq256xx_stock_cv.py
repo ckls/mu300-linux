@@ -40,7 +40,12 @@ typedef uint32_t u32;
 #define BQ256XX_CHARGER_CONTROL_1 5
 #define BQ256XX_EN_TERM 0x80
 #define BQ2560X_CHG_EN_TIMER 8
-#define BQ2560X_CHG_ICHG_MAX_uA 1980000
+#define BQ2560X_CHG_ICHG_MAX_uA 3000000
+#define BQ2560X_CHG_ICHG_FALLBACK_uA 1980000
+#define BQ256XX_ICHG_MIN_uA 0
+#define BQ256XX_ICHG_STEP_uA 60000
+#define BQ256XX_CHARGE_CURRENT_LIMIT 2
+#define BQ256XX_ICHG_MASK 0x3f
 #define BQ2560X_VBATREG_MIN_uV 3856000
 #define BQ2560X_VBATREG_OFFSET_uV 3856000
 #define BQ2560X_VBATREG_STEP_uV 32000
@@ -86,12 +91,12 @@ static int set_voltage(struct bq256xx_device*b,int val){voltage_requests++;retur
 static struct bq256xx_chip_info chip = {
  .bq256xx_def_ichg=2040000,.bq256xx_def_vbatreg=4208000,.bq256xx_def_iprechg=180000,
  .bq256xx_def_iterm=180000,.bq256xx_max_ichg=3000000,.bq256xx_max_vbatreg=4624000,
- .bq256xx_set_vindpm=unchanged,.bq256xx_set_iindpm=unchanged,.bq256xx_set_ichg=unchanged,
+ .bq256xx_set_vindpm=unchanged,.bq256xx_set_iindpm=unchanged,.bq256xx_set_ichg=bq256xx_set_ichg_curr,
  .bq256xx_set_iprechg=unchanged,.bq256xx_set_vbatreg=set_voltage,.bq256xx_set_iterm=unchanged,
 };
 static int actual_voltage(void){return ((regs[4]&0xf8)>>3)*32000+3856000;}
 static void reset(void){
- memset(regs,0,sizeof(regs));regs[4]=0x5b;regs[5]=0xcf;regs[1]=0x1a;regs[0]=0x04;
+ memset(regs,0,sizeof(regs));regs[4]=0x5b;regs[5]=0xcf;regs[1]=0x1a;regs[0]=0x04;regs[2]=0xa1;
  battery=(struct power_supply_battery_info){3000000,4300000,180000,300000};
  io_error=info_error=voltage_requests=0;
 }
@@ -99,9 +104,19 @@ int main(void){
  struct bq256xx_device b={.chip_info=&chip,.bq2560x_chg=true};
  reset();assert(!bq256xx_hw_init(&b));
  assert(b.init_data.vbatreg_max==4300000&&actual_voltage()==4272000);
- assert(b.init_data.ichg_max==1980000);
+ assert(b.init_data.ichg_max==3000000&&regs[2]==0xb2);
  assert(regs[5]==0xc7); /* TERM on, timer off, TS bit and other bits retained. */
  assert((regs[4]&7)==3&&regs[1]==0x1a&&regs[0]==0x04);
+ assert(!bq256xx_set_ichg_curr(&b,9000000)&&regs[2]==0xb2);
+ reset();battery.constant_charge_current_max_ua=1500000;
+ assert(!bq256xx_hw_init(&b));assert(b.init_data.ichg_max==1500000&&regs[2]==0x99);
+ reset();battery.constant_charge_current_max_ua=9000000;
+ assert(!bq256xx_hw_init(&b));assert(b.init_data.ichg_max==3000000&&regs[2]==0xb2);
+ reset();chip.bq256xx_max_ichg=2400000;
+ assert(!bq256xx_hw_init(&b));assert(b.init_data.ichg_max==2400000&&regs[2]==0xa8);
+ chip.bq256xx_max_ichg=3000000;
+ reset();battery.constant_charge_current_max_ua=-EINVAL;
+ assert(!bq256xx_hw_init(&b));assert(b.init_data.ichg_max==1980000&&regs[2]==0xa1);
  /* A lower-voltage cell is not raised to this board's 4.3 V setting. */
  reset();battery.constant_charge_voltage_max_uv=4100000;
  assert(!bq256xx_hw_init(&b));assert(actual_voltage()==4080000);
@@ -111,17 +126,19 @@ int main(void){
  assert(!bq256xx_hw_init(&b));assert(actual_voltage()==4208000);
  /* Missing battery information keeps the default rather than chip maximum. */
  reset();info_error=-ENODEV;assert(!bq256xx_hw_init(&b));assert(actual_voltage()==4208000);
+ assert(b.init_data.ichg_max==1980000&&regs[2]==0xa1);
  reset();info_error=-ENOMEM;assert(bq256xx_hw_init(&b)==-ENOMEM&&!voltage_requests);
  reset();io_error=-EIO;assert(bq256xx_hw_init(&b)==-EIO&&!voltage_requests);
  /* Generic bq users do not inherit the U30 policy or battery CV request. */
  reset();b.bq2560x_chg=false;assert(!bq256xx_hw_init(&b));
  assert(actual_voltage()==4208000&&regs[5]==0xcf&&b.init_data.ichg_max==3000000);
+ assert(regs[2]==0xa2);
  return 0;
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bq-stock-cv-') as directory:
     root = Path(directory)
-    code = model + function('bq2560x_set_chrg_volt') + function('bq256xx_hw_init') + tests
+    code = model + function('bq256xx_set_ichg_curr') + function('bq2560x_set_chrg_volt') + function('bq256xx_hw_init') + tests
     (root / 'test.c').write_text(code)
     subprocess.run(['cc','-Wall','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
     subprocess.run([str(root/'test')],check=True)
