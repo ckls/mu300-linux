@@ -1,0 +1,9 @@
+#!/bin/sh
+# Indicate boot before recorder/USB setup, including battery-only starts.
+# The shared controller applies the saved brightness, switch and thermal owner.
+mu300_early_leds() {
+	/opt/mu300/bin/led-status boot 2>/dev/null
+	/opt/mu300/bin/bootmark early-leds
+}
+
+boot_hook_add preinit_essential mu300_early_leds

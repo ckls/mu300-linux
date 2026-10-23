@@ -15,9 +15,8 @@ boot() {
 
 hw_bringup() {
 	[ ! -x /opt/mu300/bin/bootmark ] || /opt/mu300/bin/bootmark wifi-hw-enter
-	# switch_root terminates initramfs background jobs. Resume the same tracked
-	# chase immediately and keep it until mu300-post (or an earlier WAN success)
-	# selects the steady state.
+	# Preinit already starts the chase. This idempotent notification also
+	# covers direct service starts; mu300-post or WAN success hands it off.
 	/opt/mu300/bin/led-status boot 2>/dev/null
 	/opt/mu300/bin/openwrt-board-check >>/tmp/mu300-wifi-start.log 2>&1 || return 1
 	[ ! -x /opt/mu300/bin/bootmark ] || /opt/mu300/bin/bootmark wifi-board-ready

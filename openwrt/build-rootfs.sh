@@ -203,6 +203,7 @@ done
 chmod 0755 $R/opt/mu300/bin/cpu-voltage-platform $R/etc/init.d/mu300-cpu-driver
 chmod 0755 $R/opt/mu300/bin/mu300-lowlatency $R/opt/mu300/bin/wifi-ready $R/opt/mu300/bin/mu300-service-cpus $R/etc/init.d/mu300-service-cpus
 chmod 0755 $R/etc/init.d/mu300-sysd
+chmod 0755 $R/opt/mu300/bin/mu300-modemd $R/opt/mu300/bin/mu300-sysd
 for helper in mu300-data-sim-u30 mu300-sim-u30 u30air-led-status; do
     [ -s "$R/opt/mu300/bin/$helper" ] || { echo "missing U30 helper: $helper" >&2; exit 1; }
     chmod 0755 "$R/opt/mu300/bin/$helper"
@@ -250,7 +251,7 @@ if [ -d /in/luci-plugin ]; then
     chmod 0755 $R/etc/init.d/unisoc-modem-ui $R/etc/init.d/unisoc-sms-forward $R/etc/init.d/unisoc-traffic $R/etc/hotplug.d/net/90-unisoc-usb-host $R/etc/hotplug.d/iface/90-unisoc-usb-host $R/usr/libexec/rpcd/mu300dash $R/usr/libexec/unisoc-modem/*
     # rpcd refuses world-writable plugins from a Windows bind mount.
     chmod 0644 $R/usr/share/rpcd/ucode/*.uc $R/usr/share/ucode/mu300/*.uc
-    chroot "$R" /usr/bin/ucode -e 'import * as dash from "mu300.dash"; import * as rates from "mu300.rates"; import * as placement from "mu300.service-cpus";'
+    chroot "$R" /usr/bin/ucode -e "import * as dash from \"mu300.dash\"; import * as rates from \"mu300.rates\"; import * as placement from \"mu300.service-cpus\";"
     mkdir -p $R/usr/lib/lua/luci/i18n
     cp -a /in/luci-plugin/lmo/. $R/usr/lib/lua/luci/i18n/
     # The source-tree install does not run the package postinst. Register only

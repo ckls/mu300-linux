@@ -12,7 +12,6 @@
 # alone decides the pool and lease time.
 mu300_early_usb() {
 	[ -e /sys/class/net/usb0 ] || return 0
-	/opt/mu300/bin/led-status boot 2>/dev/null
 	/opt/mu300/bin/busybox ifconfig usb0 192.168.77.1 netmask 255.255.255.0 up
 	cat > /run/udhcpd-usb0.conf <<'EOF'
 start 192.168.77.200

@@ -64,6 +64,7 @@ class WirelessReadiness(unittest.TestCase):
 class BootContracts(unittest.TestCase):
     def test_device_entrypoints_have_unix_line_endings(self):
         for name in ['boot/init','openwrt/build-rootfs.sh',
+                     'openwrt/overlay/lib/preinit/04_mu300_early_leds',
                      'openwrt/overlay/etc/init.d/mu300-hw',
                      'openwrt/overlay/etc/init.d/mu300-service-cpus',
                      'rootfs/overlay/opt/mu300/bin/mu300-led',
@@ -84,6 +85,24 @@ class BootContracts(unittest.TestCase):
         self.assertIn('dw_pcie_wait_for_link(pci)',driver[:driver.index('static int sprd_pcie_probe(')])
         self.assertIn('sprd_pcie_clear_unhandled_msi',driver)
         self.assertFalse((TOP/'openwrt/overlay/lib/preinit/31_mu300_failsafe_wait').exists())
+
+class EarlyLeds(ShellTest):
+    def test_preinit_lights_before_usb_or_recorder_without_a_usb_interface(self):
+        hooks=TOP/'openwrt/overlay/lib/preinit'
+        self.assertLess('04_mu300_early_leds','05_mu300_early_recorder')
+        for name in ('led-status','bootmark'):
+            self.stub(name,'echo "'+name+' $*" >> "$STUBLOG/calls"')
+        source=(hooks/'04_mu300_early_leds').read_text().replace('/opt/mu300/bin/',str(self.stubs)+'/')
+        code='''boot_hook_add() { printf '%s %s' "$1" "$2"; }
+'''+source+'\nmu300_early_leds\n'
+        for shell in self.each_shell():
+            (self.tmp/'calls').write_text('')
+            result=self.sh(shell,code)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout,'preinit_essential mu300_early_leds')
+            self.assertEqual((self.tmp/'calls').read_text().splitlines(),
+                             ['led-status boot','bootmark early-leds'])
+        self.assertNotIn('led-status boot',(hooks/'06_mu300_early_usb').read_text())
 
 class DelegateReadiness(ShellTest):
     def setUp(self):

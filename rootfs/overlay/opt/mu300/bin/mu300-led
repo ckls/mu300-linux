@@ -215,12 +215,28 @@ battery() {
     if [ "$KEEP_LIT" = 1 ] && [ "$previous_power" != 1 ] && ! siren_running; then show_all; fi
 }
 
+boot_frame() {
+    [ "$DEVICE" = u30air ] && [ "$(rd "$BOOT_STATE")" = "$1" ] || return 1
+    siren_running && return 1
+    case $2 in sc27xx:red|sc27xx:green|sc27xx:blue) ;; *) return 1 ;; esac
+    BOOT_FRAME=1
+    for l in $SIREN; do [ "$l" = "$2" ] || write "$l" 0; done
+    if awake; then write "$2" 1; else write "$2" 0; fi
+}
+
 case "$1 ${2:-}" in
     "boot on")
         [ "$DEVICE" = u30air ] || exit 0
         [ ! -f "$BOOT_STATE" ] || exit 0
         siren_running && exit 0
+        # Preinit has not called power-on yet. Start the normal wake lease
+        # here as well, so a battery-only boot does not render black frames.
+        if [ "$TIMEOUT" != 0 ]; then
+            echo $(( $(uptime_s) + TIMEOUT )) > "$STATE/.awake-until"
+        fi
         echo $$ > "$BOOT_STATE"
+        # Draw while holding this lock; do not wait for worker scheduling.
+        boot_frame "$$" sc27xx:red
         "$0" boot-worker "$$" 9>&- </dev/null >/dev/null 2>&1 & ;;
     "boot off")
         [ -f "$BOOT_STATE" ] || exit 0
@@ -228,12 +244,7 @@ case "$1 ${2:-}" in
         battery
         if awake && ! siren_running; then show_all; fi ;;
     "boot-frame "*)
-        [ "$DEVICE" = u30air ] && [ "$(rd "$BOOT_STATE")" = "${2:-}" ] || exit 1
-        siren_running && exit 1
-        case ${3:-} in sc27xx:red|sc27xx:green|sc27xx:blue) ;; *) exit 1 ;; esac
-        BOOT_FRAME=1
-        for l in $SIREN; do [ "$l" = "$3" ] || write "$l" 0; done
-        if awake; then write "$3" 1; else write "$3" 0; fi ;;
+        boot_frame "${2:-}" "${3:-}" || exit 1 ;;
     "boot-worker "*)
         # Each frame takes the same lock as battery/thermal writes. The token
         # prevents an old worker from drawing after stop/restart. Never hold

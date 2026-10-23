@@ -54,3 +54,38 @@ initramfs `/init`，均未找到该机型的 RGB 开机轮换实现；U30 Air �
 - [部署及当前电池状态](../out/build-logs/20261023-060316-u30-low-charge-led-live-2513/command.log)
 
 旧脚本保留在设备 `/mnt/mu300-disk/.mu300/backups/low-charge-led-20261023/`。
+
+## 电池开机时轮换前的全灭间隔
+
+用户继续反馈：红白蓝轮换存在，但开机后先全灭数秒。读取当前 U30 Air 的历史
+启动记录，initramfs 在约 1.29 秒切换根目录，常规硬件服务约 9.23 秒进入。
+原早期 USB preinit 已调用 `led-status boot`，但 `boot on` 没有初始化亮灯时限；
+无外部电源且尚无 `.awake-until` 时，帧被 `awake()` 当成休眠而写成 0。
+这是一项可确定性复现的代码缺陷；上述历史记录不是第一帧的光学实测时间。
+
+修复使用现有共享 LED 控制器：
+
+- `boot on` 建立原配置的亮灯时限，并在现有互斥锁内同步显示第一帧，再启动轮换
+  worker。重复通知保持幂等，不延长已开始的开机时限。
+- 新增 `04_mu300_early_leds`，在 `preinit_essential` 先于 recorder 和 USB 设置
+  通知开机灯；移除 USB 钩子里的灯效调用，电池开机不再依赖 USB 接口是否存在。
+- 复用同一帧函数、亮度、灯光开关、温控 owner 和 token 交接检查。没有新增常驻
+  服务、等待或 initramfs 写灯实现；现有 Linux boot 镜像无需更换。
+
+新增测试在 worker 尚未运行时检查电池供电第一帧、配置禁用、亮度、重复通知和
+原时限；旧实现会因没有亮灯时限而失败。另检查早期钩子注册、USB 解耦及 Unix
+行尾。宿主组 39 项中 31 项执行通过；8 项缺少 ucode 的用例随后在既有 ARM64
+容器补跑全部通过，共 39 项均有实际通过结果。覆盖原灯效、充电低电量颜色、
+温控优先权、按键、F50/V50 和板级偏好。
+
+- 复现：`out/build-logs/20261023-133200-u30air-led-dark-gap-reproduce-23466/command.log`
+- 修复后回归：`out/build-logs/20261023-133243-u30air-early-led-regression-23496/command.log`
+- 原生补跑：`out/build-logs/20261023-133332-u30air-early-led-native-33759/command.log`
+
+已在核验身份的 U30 Air 更新四个启动文件，先核对原文件与提交版本一致、备份，
+再校验 shell 语法并替换、回读 SHA-256。17 份 UCI 配置文件摘要不变，未重启或
+触发当前开机灯，没有修改 boot、misc、GPT、NV 或充电配置。备份位于：
+`/mnt/mu300-disk/.mu300/backups/early-leds-20261023-133442/`。
+
+实际冷启动和电池独立供电的第一帧时刻仍待用户观察；本轮没有宣称从按电源键
+到 Linux 接管前的 bootloader 阶段也消除了全灭。没有组装新包或提交本轮修改。

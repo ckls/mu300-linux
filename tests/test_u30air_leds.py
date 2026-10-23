@@ -72,6 +72,37 @@ esac""")
             finally:
                 token.unlink(missing_ok=True)
 
+    def test_battery_only_boot_lights_first_frame_before_worker_runs(self):
+        # Stop the worker at its entry so only the boot command can draw.
+        # This reproduces preinit before power-on has established a wake lease.
+        controller=self.tmp/'boot-led'
+        source=(BIN/'mu300-led').read_text()
+        controller.write_text(source.replace('#!/bin/sh\n',
+            '#!/bin/sh\n[ "${1:-}" != boot-worker ] || exit 0\n',1))
+        controller.chmod(0o755)
+        (self.battery/'status').write_text('Discharging\n')
+        state=self.root/'run/mu300/led'
+        for shell in self.each_shell():
+            for enabled in ('1','0'):
+                state.mkdir(exist_ok=True)
+                for name in ('.boot-chase','.awake-until'):
+                    (state/name).unlink(missing_ok=True)
+                (self.root/'proc/uptime').write_text('100.00 999.00\n')
+                extra=dict(self.extra,TEST_TIMEOUT='60',TEST_BATTERY=enabled,TEST_BRIGHTNESS='40')
+                result=self.script(shell,controller,'boot','on',**extra)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual([self.value('sc27xx:'+c) for c in ('red','green','blue')],
+                                 ['40' if enabled=='1' else '0','0','0'])
+                self.assertEqual((state/'.awake-until').read_text().strip(),'160')
+                # Repeated boot notifications must not reset a user's timeout.
+                token=(state/'.boot-chase').read_text()
+                (self.root/'proc/uptime').write_text('130.00 999.00\n')
+                result=self.script(shell,controller,'boot','on',**extra)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual((state/'.boot-chase').read_text(),token)
+                self.assertEqual((state/'.awake-until').read_text().strip(),'160')
+                (state/'.boot-chase').unlink()
+
     def test_boot_worker_exits_on_handoff_and_cannot_outlive_its_token(self):
         if not shutil.which('busybox'): self.skipTest('bundled BusyBox applets required')
         for shell in self.each_shell():
