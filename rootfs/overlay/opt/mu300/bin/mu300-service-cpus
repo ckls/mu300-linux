@@ -1,0 +1,16 @@
+#!/usr/bin/ucode
+import { cursor } from 'uci';
+import { apply } from 'mu300.service-cpus';
+let c=cursor(), action=ARGV[0] || 'get';
+let selected=c.get('unisoc_modem','main','services_cpus') || 'little';
+if(action=='get') { print(selected+'\n'); exit(0); }
+if(!(action in ['apply','little','all']))die('Usage: mu300-service-cpus [get|apply|little|all]\n');
+let mode=action=='apply'?selected:action;
+let result=apply('',mode);
+if(result.ok && action!='apply') {
+    if(!c.get('unisoc_modem','main'))c.set('unisoc_modem','main','core');
+    if(!c.set('unisoc_modem','main','services_cpus',mode) || !c.commit('unisoc_modem'))
+        result={ok:false,error:'Service placement applied but could not be saved'};
+}
+print(sprintf('%J\n',result));
+exit(result.ok?0:1);

@@ -104,7 +104,7 @@ mu300_sim_absent() { return 0; }
     def test_sms_known_absence_does_not_probe_or_initialize(self):
         text = (TOP/'rootfs/overlay/opt/mu300/bin/mu300-smsd').read_text()
         readiness = text[text.index('# A starting/busy SIM'):text.index('at_ok() {')]
-        gating = text[text.index('    if sim_absent; then', text.index('while :; do\n    sleep')):
+        gating = text[text.index('    if sim_absent; then', text.index('while :; do\n    sms_event=')):
                       text.index('    if process_spool; then')]
         for shell in self.each_shell():
             code = '''sim_absent() { return 0; }

@@ -50,7 +50,14 @@ esac
 # mixed): its battery LED, the F50's only one, where green is green and stays out
 case $DEVICE in u30air) SIREN="sc27xx:red sc27xx:green sc27xx:blue" ;; *) SIREN="sc27xx:red sc27xx:blue" ;; esac
 SIREN_PID=$R/run/mu300/led-siren.pid
-TIMEOUT=$(sed -n 's/^LED_TIMEOUT=\([0-9][0-9]*\)$/\1/p' "${MU300_LED_CONF:-/etc/mu300/led.conf}" 2>/dev/null | tail -n1)
+BOOT_STATE=$STATE/.boot-chase
+rd() { local value=; [ -r "$1" ] || return 1; IFS= read -r value < "$1" || :; printf '%s\n' "$value"; }
+TIMEOUT=
+if [ -r "${MU300_LED_CONF:-/etc/mu300/led.conf}" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        case $line in LED_TIMEOUT=*) value=${line#LED_TIMEOUT=}; case $value in ''|*[!0-9]*) ;; *) TIMEOUT=$value ;; esac ;; esac
+    done < "${MU300_LED_CONF:-/etc/mu300/led.conf}"
+fi
 TIMEOUT=${TIMEOUT:-$DEFAULT_TIMEOUT}
 if [ "$DEVICE" = u30air ]; then
     value=$(uci -q get system.mu300_leds.timeout 2>/dev/null)
@@ -62,7 +69,7 @@ cfg() { uci -q get "system.mu300_leds.$1" 2>/dev/null; }
 # power snapshot, desired state and physical writes in one transaction, so an
 # event started before unplug cannot restart breathing after timeout darkening.
 # flock is already a runtime dependency of the native SIM controller.
-if [ "$DEVICE" = u30air ] && [ "${1:-}" != siren ]; then
+if [ "$DEVICE" = u30air ] && [ "${1:-}" != siren ] && [ "${1:-}" != boot-worker ]; then
     mkdir -p "$STATE" || exit 0
     exec 9>"$STATE/.lock"
     flock -w 2 9 || exit 0
@@ -83,11 +90,11 @@ external_power() {
 KEEP_LIT=0
 external_power && KEEP_LIT=1
 
-uptime_s() { cut -d. -f1 "$R/proc/uptime" 2>/dev/null || echo 0; }
+uptime_s() { local value=; IFS=" " read -r value _ < "$R/proc/uptime" 2>/dev/null || :; value=${value%%.*}; printf "%s\n" "${value:-0}"; }
 awake() {
     [ "$KEEP_LIT" != 1 ] || return 0
     [ "$TIMEOUT" = 0 ] && return 0
-    until=$(cat "$STATE/.awake-until" 2>/dev/null) || return 1
+    until=$(rd "$STATE/.awake-until") || return 1
     [ "$(uptime_s)" -lt "${until:-0}" ]
 }
 vendor_ldo() {  # vendor_ldo zte-ldoN: the 5.4 kernel's switch for that LDO, if there
@@ -98,6 +105,13 @@ vendor_ldo() {  # vendor_ldo zte-ldoN: the 5.4 kernel's switch for that LDO, if 
 has_led() { [ -e "$LEDS/$1" ] || vendor_ldo "$1" >/dev/null; }
 write() {  # write NAME 0|1: the LED itself
     local requested=$2 group= value maximum level pattern
+    # Boot owns only the battery RGB. Power events still update the desired
+    # battery state, but cannot overwrite a frame before the boot handoff.
+    case $1 in sc27xx:*)
+        if [ -f "$BOOT_STATE" ]; then
+            [ "${BOOT_FRAME:-0}" = 1 ] || return 0
+        fi ;;
+    esac
     if [ "$DEVICE" = u30air ]; then
         case $1 in
             net_blue|zte-ldo0|keyboard-backlight) group=signal ;;
@@ -108,7 +122,7 @@ write() {  # write NAME 0|1: the LED itself
     fi
     if [ ! -e "$LEDS/$1" ] && f=$(vendor_ldo "$1"); then echo "$requested" > "$f" 2>/dev/null; return 0; fi
     [ -w "$LEDS/$1/brightness" ] || return 0
-    maximum=$(cat "$LEDS/$1/max_brightness" 2>/dev/null)
+    maximum=$(rd "$LEDS/$1/max_brightness")
     case $maximum in ''|*[!0-9]*) maximum=255 ;; esac
     value=0
     if [ "$requested" = 1 ]; then
@@ -120,7 +134,7 @@ write() {  # write NAME 0|1: the LED itself
         fi
     fi
     # SC27xx provides a hardware rise/hold/fall/rest engine. No animation worker.
-    if [ "$value" -gt 0 ] && [ "$(cat "$STATE/.battery-breathe" 2>/dev/null)" = "$1" ] &&
+    if [ "${BOOT_FRAME:-0}" != 1 ] && [ "$value" -gt 0 ] && [ "$(rd "$STATE/.battery-breathe")" = "$1" ] &&
        grep -qw pattern "$LEDS/$1/trigger"; then
         # 2.25 s cycle: quicker ramps and a longer full-brightness hold.
         # Keep the requested peak (up to 255); do not overdrive the PMIC.
@@ -133,14 +147,14 @@ write() {  # write NAME 0|1: the LED itself
             echo pattern > "$LEDS/$1/trigger"
         fi
         if [ -w "$LEDS/$1/hw_pattern" ]; then
-            [ "$(cat "$LEDS/$1/repeat" 2>/dev/null)" = -1 ] || echo -1 > "$LEDS/$1/repeat"
-            [ "$(cat "$LEDS/$1/hw_pattern" 2>/dev/null)" = "$pattern" ] || echo "$pattern" > "$LEDS/$1/hw_pattern"
+            [ "$(rd "$LEDS/$1/repeat")" = -1 ] || echo -1 > "$LEDS/$1/repeat"
+            [ "$(rd "$LEDS/$1/hw_pattern")" = "$pattern" ] || echo "$pattern" > "$LEDS/$1/hw_pattern"
             return 0
         fi
     fi
     echo none > "$LEDS/$1/trigger" 2>/dev/null
     echo "$value" > "$LEDS/$1/brightness" 2>/dev/null
-    if [ "$value" -gt 0 ] && [ "$(cat "$STATE/.battery-blink" 2>/dev/null)" = "$1" ] &&
+    if [ "$value" -gt 0 ] && [ "$(rd "$STATE/.battery-blink")" = "$1" ] &&
        grep -qw timer "$LEDS/$1/trigger"; then
         echo timer > "$LEDS/$1/trigger"
         echo 750 > "$LEDS/$1/delay_on"
@@ -162,27 +176,29 @@ wifi_band() {  # 5 or 2.4: the channel the hotspot runs on, else (it has none ye
 show_all() {  # every LED as it should be
     for f in "$STATE"/*; do
         [ -f "$f" ] || continue
-        write "${f##*/}" "$(cat "$f")"
+        write "${f##*/}" "$(rd "$f")"
     done
 }
-siren_running() { p=$(cat "$SIREN_PID" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
+siren_running() { p=$(rd "$SIREN_PID") && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 nap() { sleep "$1" 2>/dev/null || sleep 1; }   # (a busybox without fractional sleep)
 
 battery() {
     [ "$DEVICE" = u30air ] || return 0
     local root=${MU300_POWER_SUPPLY_DIR:-$R/sys/class/power_supply} cap status color channel value previous_power
-    cap=$(cat "$root/sc27xx-fgu/capacity" 2>/dev/null)
+    cap=$(rd "$root/sc27xx-fgu/capacity")
     case $cap in ''|*[!0-9]*) return 0 ;; esac
     [ "$cap" -le 100 ] || return 0
-    status=$(cat "$root/sc27xx-fgu/status" 2>/dev/null)
+    status=$(rd "$root/sc27xx-fgu/status")
     # Charger online changes before the fuel-gauge status sometimes does.
     # A stale "Charging"/"Full" must not keep the charging indication alive.
     [ "$KEEP_LIT" != 0 ] || status=Discharging
-    # Stock U30 Air: blue below 50%, white from 50%; Full is steady white.
+    # U30 Air: charging below 10% breathes red, 10..49% blue, then white.
+    # Discharging keeps its existing colour policy; Full is steady white.
     color=sc27xx:green
     [ "$cap" -ge 50 ] || color=sc27xx:blue
+    if [ "$status" = Charging ] && [ "$cap" -lt 10 ]; then color=sc27xx:red; fi
     mkdir -p "$STATE"
-    previous_power=$(cat "$STATE/.external-power" 2>/dev/null)
+    previous_power=$(rd "$STATE/.external-power")
     echo "$KEEP_LIT" > "$STATE/.external-power"
     if [ "$previous_power" = 1 ] && [ "$KEEP_LIT" = 0 ] && [ "$TIMEOUT" != 0 ]; then
         echo $(( $(uptime_s) + TIMEOUT )) > "$STATE/.awake-until"
@@ -200,6 +216,34 @@ battery() {
 }
 
 case "$1 ${2:-}" in
+    "boot on")
+        [ "$DEVICE" = u30air ] || exit 0
+        [ ! -f "$BOOT_STATE" ] || exit 0
+        siren_running && exit 0
+        echo $$ > "$BOOT_STATE"
+        "$0" boot-worker "$$" 9>&- </dev/null >/dev/null 2>&1 & ;;
+    "boot off")
+        [ -f "$BOOT_STATE" ] || exit 0
+        rm -f "$BOOT_STATE"
+        battery
+        if awake && ! siren_running; then show_all; fi ;;
+    "boot-frame "*)
+        [ "$DEVICE" = u30air ] && [ "$(rd "$BOOT_STATE")" = "${2:-}" ] || exit 1
+        siren_running && exit 1
+        case ${3:-} in sc27xx:red|sc27xx:green|sc27xx:blue) ;; *) exit 1 ;; esac
+        BOOT_FRAME=1
+        for l in $SIREN; do [ "$l" = "$3" ] || write "$l" 0; done
+        if awake; then write "$3" 1; else write "$3" 0; fi ;;
+    "boot-worker "*)
+        # Each frame takes the same lock as battery/thermal writes. The token
+        # prevents an old worker from drawing after stop/restart. Never hold
+        # the lock while sleeping or leave a worker once boot has completed.
+        while :; do
+            for l in $SIREN; do
+                "$0" boot-frame "$2" "$l" || exit 0
+                "${MU300_BUSYBOX:-/opt/mu300/bin/busybox}" usleep 250000 || exit 1
+            done
+        done ;;
     "battery "*) battery ;;
     "refresh "*) if awake; then show_all; fi ;;
     "power on")   set_led "$POWER" 1; [ "$TIMEOUT" = 0 ] || { exec 9>&-; exec "$0" wake; } ;;
@@ -225,6 +269,7 @@ case "$1 ${2:-}" in
         rm -f "$STATE/.awake-until"
         for f in "$STATE"/*; do [ -f "$f" ] && write "${f##*/}" 0; done ;;
     "alarm on")
+        rm -f "$BOOT_STATE"
         siren_running && exit 0
         mkdir -p "${SIREN_PID%/*}" 2>/dev/null
         "$0" siren 9>&- </dev/null >/dev/null 2>&1 &
@@ -242,7 +287,7 @@ case "$1 ${2:-}" in
         # The file is written just after the start, so a missing one counts only after the first round.
         n=0
         while :; do
-            own=$(cat "$SIREN_PID" 2>/dev/null)
+            own=$(rd "$SIREN_PID")
             if [ -n "$own" ]; then [ "$own" = $$ ] || exit 0
             elif [ $n -gt 0 ]; then exit 0; fi
             n=$((n + 1))
@@ -255,7 +300,7 @@ case "$1 ${2:-}" in
         for l in "$LEDS"/*; do
             n=${l##*/}
             case $n in mmc*|*backlight*) continue ;; esac
-            old=$(cat "$l/brightness" 2>/dev/null)
+            old=$(rd "$l/brightness")
             echo "$n"; write "$n" 1; sleep 2; echo "${old:-0}" > "$l/brightness" 2>/dev/null
         done ;;
     *) sed -n '2,10s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;

@@ -1,5 +1,7 @@
 """Battery percentage paths shared by the dashboard and power notifications."""
 from helpers import TOP, ShellTest
+from native_dashboard_fixture import Snapshot
+from types import SimpleNamespace
 
 LIB = TOP/'openwrt/luci-app-mu300/root/usr/libexec/unisoc-modem'
 
@@ -9,6 +11,9 @@ class PowerSupply(ShellTest):
         super().setUp()
         self.root = self.tmp/'supply'
         self.root.mkdir()
+        self.native = Snapshot(self.tmp/'native')
+        (self.native.root/'sys/class/power_supply').parent.mkdir(parents=True,exist_ok=True)
+        (self.native.root/'sys/class/power_supply').symlink_to(self.root)
         self.extra = dict(MU300_POWER_SUPPLY_DIR=self.root,
                           MU300_POWER_DEVICE='u30air',
                           MU300_POWER_LIB=LIB/'power-supply.sh')
@@ -21,11 +26,13 @@ class PowerSupply(ShellTest):
         return path
 
     def snapshot(self, shell, **env):
-        source = (LIB/'dashboard-info').read_text()
-        helpers = source[source.index('rd() {'):source.index('# JSON string escaping')]
-        power = source[source.index('POWER_LIB='):source.index('# ------------------------------------------------------- interface counters')]
-        code = helpers+power+'\nprintf "%s|%s|%s|%s|%s|%s" "$P_PRESENT" "$P_CAP" "$P_STATUS" "$P_V" "$P_I" "$P_USB"'
-        return self.sh(shell, code, **(self.extra | env))
+        self.native.write('run/mu300/device',env.get('MU300_POWER_DEVICE','u30air'))
+        value=self.native.run('power')
+        def display(v): return '' if v is None else str(v)
+        fields=[str(value['present']),display(value['capacity']),display(value['status']),
+                'null' if value['volt'] is None else f"{value['volt']:.2f}",
+                'null' if value['ua'] is None else str(value['ua']),display(value['usb'])]
+        return SimpleNamespace(returncode=0,stderr='',stdout='|'.join(fields))
 
     def notification(self, shell, **env):
         source = (LIB/'sms-forward').read_text()

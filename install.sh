@@ -513,8 +513,9 @@ docker build -q -t mu300-ubuntu:24.04 "$TOP/rootfs" >/dev/null
 docker run --rm mu300-ubuntu:24.04 cat /bin/busybox > "$WORK/busybox"; chmod +x "$WORK/busybox"
 docker run --rm -v "$TOP/tools":/src:ro -v "$WORK/tools":/o mu300-kbuild sh -c '
   gcc -O2 -static -o /o/logdw/logdw /src/logdw/logdw.c &&
-  gcc -O2 -static -o /o/bt-init/mu300-bt-init /src/bt-init/mu300-bt-init.c &&
-  mkdir -p /o/keys && gcc -O2 -static -o /o/keys/mu300-keys /src/keys/mu300-keys.c'
+  gcc -O2 -static -o /o/bt-init/mu300-bt-init /src/bt-init/mu300-bt-init.c'
+sh "$TOP/tools/keys/build.sh" "$WORK/tools/keys"
+sh "$TOP/tools/atd-io/build.sh" "$WORK/tools/atd-io"
 # the VPN engines, as tools/make-release.sh puts them into the published images (without them mu300-vpn only
 # fails with "xray: not found")
 [ -s "$WORK/sing-box" ] || sh "$TOP/tools/fetch-sing-box.sh" "$WORK/sing-box"
@@ -540,7 +541,7 @@ case " $OSES " in *" ubuntu "*) reuse ubuntu || {
     # shellcheck disable=SC2086
     docker run --rm -v "$B":/w -v "$WORK/out/modules":/kmods:ro -v "$WORK/out":/kout:ro -v "$WORK/firmware":/firmware:ro \
       -v "$WORK/android-subset":/android-subset:ro -v "$WORK/tools/logdw/logdw":/logdw:ro \
-      -v "$WORK/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$WORK/tools/keys/mu300-keys":/keys:ro -v "$WORK/sing-box":/sing-box:ro -v "$WORK/xray":/xray:ro \
+      -v "$WORK/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$WORK/tools/keys/mu300-keys":/keys:ro -v "$WORK/tools/atd-io/mu300-atd-io":/atd-io:ro -v "$WORK/sing-box":/sing-box:ro -v "$WORK/xray":/xray:ro \
       -v "$WORK/hev-socks5-tunnel":/hev-socks5-tunnel:ro $gpuargs mu300-ubuntu:24.04 bash /w/assemble.sh >/dev/null
     mv "$B/mu300-ubuntu-24.04-rootfs.tar.gz" "$WORK/mu300-ubuntu.tar.gz"; rm -rf "$B"; } ;;
 esac

@@ -257,15 +257,6 @@ v6_off() {
 #      实测那一步会把刚起来的 CP 又清一次，白等一整轮 CP 启动（12 s 起）。SFUN=4 之后要等
 #      射频真正上来，而不是问一次就走。
 radio_on_locked() {
-    if [ "$DEVICE" = u30air ]; then
-        "${MU300_RADIO_ALLOWED:-/opt/mu300/bin/mu300-radio-allowed}" "$MU300_SIM_SLOT" || return 7
-    fi
-    if [ "$DEVICE" = u30air ] && [ -e /run/mu300-radio-freeze ]; then
-        [ ! -e /run/mu300/sim-switching ] && [ ! -e /run/mu300/sim-active-unknown ] &&
-            [ -e /run/mu300/sim-radio-ready ] || return 1
-        at 'AT+CFUN?' 4 | tr -d '\r' | grep -Eq '^\+CFUN: *1$'
-        return $?
-    fi
     local i=0 out silent=0 answered=0 urclog=/run/mu300-at/urc/stty_nr0.log
     local ready_deadline=$((SECONDS + ${MU300_CFUN_WAIT:-30}))
     mark radio-on-enter
@@ -304,7 +295,7 @@ radio_on_locked() {
     if [ "$DEVICE" = v50 ] && [ -n "$(uci -q get unisoc_modem.main.v50_card 2>/dev/null || true)" ]; then
         /opt/mu300/bin/mu300-v50-sim boot || return 1
     fi
-    if [ "$DEVICE" != u30air ] && [ "$(uci -q get unisoc_modem.main.sim_slots 2>/dev/null || true)" = 2 ]; then
+    if [ "$(uci -q get unisoc_modem.main.sim_slots 2>/dev/null || true)" = 2 ]; then
         /opt/mu300/bin/mu300-dual-radio
         local dual_rc=$?
         [ "$dual_rc" = 0 ] || return "$dual_rc"
@@ -675,16 +666,6 @@ configure_initial_apn() {
 }
 
 up_locked() {
-    if [ "$DEVICE" = u30air ] && [ -e /run/mu300-radio-freeze ]; then
-        # The cold-start process needs the RF mutex. Wait outside it, so a
-        # first dial does not fail and incur netifd's normal retry delay.
-        local native_end=$((SECONDS + ${MU300_NATIVE_RADIO_WAIT:-40})) boot_slot
-        until [ -e /run/mu300/sim-radio-ready ] || [ ! -e /run/mu300-radio-freeze ] || [ "$SECONDS" -ge "$native_end" ]; do sleep 1; done
-        boot_slot=$(cat /run/mu300/sim-slot 2>/dev/null || true)
-        # A fallback changed this protocol task's card. Let netifd re-evaluate
-        # its per-SIM APN and teardown owner instead of dialing the old choice.
-        [ "$boot_slot" = "$MU300_SIM_SLOT" ] || return 1
-    fi
     modem_stack || { echo "no modem stack in this kernel ($(uname -r))" >&2; exit 3; }
     rm -f /run/mu300-mobile-data-down /run/mu300-mobile-data-manual-down
     tty_setup
@@ -692,16 +673,7 @@ up_locked() {
         echo 'SIM absent; waiting for card state event' >&2; return 6
     fi
     radio_on || return $?
-    if [ "$DEVICE" = u30air ] && [ "$MU300_SIM_SLOT" = 0 ] && [ ! -e /run/mu300-radio-freeze ] && [ -e /etc/mu300/sim-data-route-2 ]; then
-        current=$(at 'AT+SPSWDATA?' 4 | tr -d '\r' | sed -n 's/^+SPSWDATA: *\([01]\) *$/\1/p' | head -n1) || current=
-        if [ "$current" = 1 ]; then
-            at 'AT+SPSWDATA' 8 | tr -d '\r' | grep -qx OK || return 1
-            current=$(at 'AT+SPSWDATA?' 4 | tr -d '\r' | sed -n 's/^+SPSWDATA: *\([01]\) *$/\1/p' | head -n1) || current=
-            [ "$current" != 1 ] || return 1
-        fi
-        [ "$current" != 0 ] || rm -f /etc/mu300/sim-data-route-2
-    fi
-    if [ "$DEVICE" != u30air ] && [ "$(uci -q get unisoc_modem.main.sim_slots 2>/dev/null || true)" = 2 ]; then
+    if [ "$(uci -q get unisoc_modem.main.sim_slots 2>/dev/null || true)" = 2 ]; then
         # Select the data card once, before activation; never use SMMSWAP to
         # implement viewing or data selection. Confirm even an omitted OK.
         current=$(at 'AT+SPSWDATA?' 3 | sed -n 's/^+SPSWDATA: *\([01]\).*/\1/p' | head -n1)
@@ -875,7 +847,6 @@ down() {
 
 sim_reset() {
     "${MU300_RADIO_ALLOWED:-/opt/mu300/bin/mu300-radio-allowed}" "$MU300_SIM_SLOT" || { echo 'This SIM radio is disabled by the user' >&2; return 1; }
-    [ ! -e /run/mu300/sim-managed ] || { echo "Native dual-SIM RF is managed; use SIM control or reboot" >&2; return 1; }
     tty_setup
     at 'AT+SFUN=5' 20; at 'AT+SFUN=3' 10; sleep 2; at 'AT+SFUN=2' 10; at 'AT+SFUN=4' 30
     for _ in $(seq 1 30); do at 'AT+CPIN?' | grep -q READY && break; sleep 2; done
@@ -908,6 +879,12 @@ watch_radio_if_off() {
 
 watch() {
     local fails=0 context_state want have
+    # OpenWrt uses ubus events; Ubuntu retains its existing watchdog wait.
+    watch_events_stop() { :; }
+    watch_next() { sleep "${MU300_WATCH_INTERVAL:-30}"; }
+    if [ "${MU300_NETIFD:-0}" = 1 ]; then
+        . "${MU300_DATA_EVENTS_LIB:-/opt/mu300/lib/data-events.sh}" || return 1
+    fi
     # one watchdog is enough: procd and systemd have both been seen starting a second one
     local wlock=/run/mu300-mobile-data-watch.lock wp=
     while ! mkdir "$wlock" 2>/dev/null; do
@@ -921,12 +898,26 @@ watch() {
         rm -rf "$wlock"
     done
     echo $$ > "$wlock/pid"
-    trap 'rm -f "$wlock/pid"; rmdir "$wlock" 2>/dev/null || true' EXIT
+    # Bash may unwind function locals before EXIT on errexit. Keep cleanup
+    # state at process scope, and never remove a lock another owner replaced.
+    watch_state_lock=$wlock
+    watch_cleanup() {
+        local owner=
+        watch_events_stop
+        [ -n "${watch_state_lock:-}" ] || return 0
+        [ -r "$watch_state_lock/pid" ] || return 0
+        IFS= read -r owner < "$watch_state_lock/pid" 2>/dev/null || return 0
+        [ "$owner" = "$$" ] || return 0
+        rm -f "$watch_state_lock/pid"
+        rmdir "$watch_state_lock" 2>/dev/null || true
+    }
+    trap watch_cleanup EXIT
     trap 'exit 143' TERM
     trap 'exit 130' INT
     modem_stack || { echo "no modem stack in this kernel ($(uname -r)), not watching" >&2; exit 0; }
+    if [ "${MU300_NETIFD:-0}" = 1 ]; then watch_events_start || return 1; fi
     while :; do
-        sleep "${MU300_WATCH_INTERVAL:-30}"
+        watch_next
         [ ! -e /run/mu300/sim-switching ] && [ ! -e /run/mu300/sim-active-unknown ] || continue
         [ ! -d /run/unisoc-data-sim-switch ] || continue
         [ -e /run/mu300-mobile-data-down ] && continue
@@ -1058,11 +1049,7 @@ case "${1:-status}" in
             esac
             exit $?
         fi
-        [ "$DEVICE" = u30air ] || exit 2
-        case "$*" in
-            '/bin/bash /opt/mu300/bin/mu300-sim2-start --cold-start'|'/opt/mu300/bin/mu300-sim-u30 --sequence 0'|'/opt/mu300/bin/mu300-sim-u30 --sequence 1') radio_locked "$@" ;;
-            *) exit 2 ;;
-        esac ;;
+        exit 2 ;;
     up) up "${2:-}" ;;
     data-priority) data_priority ;;
     radio-on)

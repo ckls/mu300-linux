@@ -12,6 +12,11 @@
 # (sipa_eth*), so it survives mobile data reconnecting, and it lives in its own nftables table (inet mu300_ttl),
 # next to OpenWrt's fw4 and the Ubuntu firewall.
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
+# OpenWrt uses the same explicit backend as the LuCI page. Ubuntu retains its
+# nftables CLI below; this is a platform distinction, never an error fallback.
+if [ -f /etc/openwrt_release ]; then
+    exec /usr/libexec/unisoc-modem/ttl-engine "$@"
+fi
 CONF=${MU300_TTL_CONF:-/etc/mu300/ttl.conf}   # (the variable is for tests/)
 TABLE="inet mu300_ttl"
 

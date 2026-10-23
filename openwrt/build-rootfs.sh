@@ -124,19 +124,19 @@ ls "$IN/out/modules"/*.ko >/dev/null 2>&1 || {
 }
 # The optional ones decide whether the image can use the modem, Wi-Fi, the GPU or the VPN at all. Missing ones
 # used to be skipped silently, which produces an image that boots and then does nothing useful.
-for o in firmware android-subset android-gpu-subset tools/logdw/logdw tools/bt-init/mu300-bt-init tools/keys/mu300-keys tools/gpu/cltest busybox upstream/out/modules; do
+for o in firmware android-subset android-gpu-subset tools/logdw/logdw tools/bt-init/mu300-bt-init tools/keys/mu300-keys tools/atd-io/mu300-atd-io tools/gpu/cltest busybox upstream/out/modules; do
     [ -e "$IN/$o" ] && echo "  + $o" || echo "  - $o   (missing: the image is built without it)"
 done
 # shellcheck disable=SC2046
 docker run --rm --platform linux/arm64 \
   -v "${MU300_RELEASE_JSON:-$TOP/work}":/in/release.json:ro \
-  -v "$TOP/rootfs/overlay/opt/mu300":/in/opt-mu300:ro -v "$TOP/openwrt/overlay":/in/overlay:ro \
+  -v "$TOP/rootfs/overlay/opt/mu300":/in/opt-mu300:ro -v "$TOP/rootfs/overlay/usr/share/ucode/mu300":/in/ucode-mu300:ro -v "$TOP/openwrt/overlay":/in/overlay:ro \
   -v "$TOP/openwrt/patches/fw4-sipa-offload.patch":/in/fw4-sipa-offload.patch:ro \
   -v "$TOP/openwrt/patches/wifi-scripts-no-dfs.patch":/in/wifi-scripts-no-dfs.patch:ro \
   -v "$TOP/boot/module-order.txt":/in/module-order.txt:ro -v "$IN/out/modules":/in/modules:ro \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
-  $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/keys/mu300-keys keys) $(opt tools/gpu/cltest cltest) \
+  $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/keys/mu300-keys keys) $(opt tools/atd-io/mu300-atd-io atd-io) $(opt tools/gpu/cltest cltest) \
   $(opt busybox busybox) $(mainline_opt modules mainline-modules) $(plugin_opt) -v "$ROOTFS_DIR":/out -v "$REGDB":/in/regdb:ro \
   $(mainline_opt modules.builtin mainline-modules.builtin) $(mainline_opt modules.builtin.modinfo mainline-modules.builtin.modinfo) \
   -v "$THEME_APK":/in/luci-theme-aurora.apk:ro \
@@ -164,7 +164,7 @@ apk_retry update >/dev/null
 # i2c-tools, gpiod-tools: mu300-usb (the charger of the U30 Air) and mu300-nfc (its NFC tag)
 apk_retry add --allow-untrusted /in/wifi-sae/*.apk >/dev/null
 # The cipher capability helper needs the section omitted by reduced iw builds.
-apk_retry add iwinfo wireless-regdb iw-full bash ip-full coreutils-stty openssl-util curl ca-bundle msmtp ucode ucode-mod-fs ucode-mod-ubus ucode-mod-uci ucode-mod-uloop ucode-mod-socket \
+apk_retry add iwinfo wireless-regdb iw-full bash ip-full coreutils-stty openssl-util curl ca-bundle msmtp luci-base rpcd-mod-ucode ucode ucode-mod-fs ucode-mod-ubus ucode-mod-uci ucode-mod-uloop ucode-mod-nl80211 ucode-mod-rtnl ucode-mod-socket \
     i2c-tools gpiod-tools flock ttyd luci-app-ttyd luci-i18n-ttyd-zh-cn luci-i18n-ttyd-tr python3 >/dev/null
 apk_retry add --allow-untrusted /in/block-mount-mu300.apk >/dev/null
 apk_retry add --allow-untrusted /in/luci-theme-aurora.apk >/dev/null
@@ -189,6 +189,8 @@ printf "127.0.0.1\tlocalhost\n\n::1\tlocalhost ip6-localhost ip6-loopback\nff02:
 printf "mu300\n" > $R/etc/hostname   # the real one comes from uci (etc/uci-defaults/90-mu300)
 cp -a /in/opt-mu300 $R/opt/mu300
 cp -a /in/overlay/. $R/
+mkdir -p $R/usr/share/ucode/mu300
+cp -a /in/ucode-mu300/. $R/usr/share/ucode/mu300/
 chmod 0755 $R/etc/uci-defaults/95-disable-ap-uapsd
 chmod 0755 $R/etc/init.d/unisoc-battery $R/etc/hotplug.d/power_supply/80-unisoc-battery
 mkdir -p $R/etc/mu300
@@ -199,13 +201,13 @@ for f in sbin/block lib/libblkid-tiny.so etc/init.d/fstab; do
     [ -s "$R/$f" ] || { echo "patched block-mount required file missing: $f" >&2; exit 1; }
 done
 chmod 0755 $R/opt/mu300/bin/cpu-voltage-platform $R/etc/init.d/mu300-cpu-driver
-chmod 0755 $R/opt/mu300/bin/mu300-lowlatency
-for helper in mu300-data-sim-u30 mu300-sim-u30 mu300-sim2-start mu300-sim2-warmup u30air-led-status; do
+chmod 0755 $R/opt/mu300/bin/mu300-lowlatency $R/opt/mu300/bin/wifi-ready $R/opt/mu300/bin/mu300-service-cpus $R/etc/init.d/mu300-service-cpus
+chmod 0755 $R/etc/init.d/mu300-sysd
+for helper in mu300-data-sim-u30 mu300-sim-u30 u30air-led-status; do
     [ -s "$R/opt/mu300/bin/$helper" ] || { echo "missing U30 helper: $helper" >&2; exit 1; }
     chmod 0755 "$R/opt/mu300/bin/$helper"
 done
 chroot "$R" /bin/sh -c "command -v flock >/dev/null" || { echo "missing native SIM flock dependency" >&2; exit 1; }
-[ -s "$R/opt/mu300/lib/sim-config.sh" ] || { echo "missing U30 SIM configuration library" >&2; exit 1; }
 [ -s "$R/opt/mu300/lib/sms-pool.sh" ] || { echo "missing shared SMS pool library" >&2; exit 1; }
 chmod 0755 $R/etc/hotplug.d/power_supply/70-mu300-led
 chmod 0755 $R/opt/mu300/bin/mu300-platform-config
@@ -243,8 +245,12 @@ if [ -d /in/luci-plugin ]; then
     ucode $R/usr/libexec/unisoc-modem/filter-wifi-ciphers $R
     chmod 0755 $R/etc/init.d/unisoc-cpu $R/etc/init.d/unisoc-cpu-cores $R/usr/libexec/rpcd/unisoc-cpu-cores
     chmod 0600 $R/etc/config/unisoc_apn
+    chmod 0755 $R/etc/init.d/unisoc-ttl $R/etc/hotplug.d/iface/92-unisoc-ttl $R/etc/uci-defaults/98-unisoc-ttl
     chmod 0755 $R/etc/uci-defaults/97-unisoc-upgrade-policy
     chmod 0755 $R/etc/init.d/unisoc-modem-ui $R/etc/init.d/unisoc-sms-forward $R/etc/init.d/unisoc-traffic $R/etc/hotplug.d/net/90-unisoc-usb-host $R/etc/hotplug.d/iface/90-unisoc-usb-host $R/usr/libexec/rpcd/mu300dash $R/usr/libexec/unisoc-modem/*
+    # rpcd refuses world-writable plugins from a Windows bind mount.
+    chmod 0644 $R/usr/share/rpcd/ucode/*.uc $R/usr/share/ucode/mu300/*.uc
+    chroot "$R" /usr/bin/ucode -e 'import * as dash from "mu300.dash"; import * as rates from "mu300.rates"; import * as placement from "mu300.service-cpus";'
     mkdir -p $R/usr/lib/lua/luci/i18n
     cp -a /in/luci-plugin/lmo/. $R/usr/lib/lua/luci/i18n/
     # The source-tree install does not run the package postinst. Register only
@@ -270,6 +276,7 @@ fi
 [ -e /in/logdw ] && { cp /in/logdw $R/opt/mu300/bin/logdw; chmod 755 $R/opt/mu300/bin/logdw; }
 [ -e /in/bt-init ] && { cp /in/bt-init $R/opt/mu300/bin/mu300-bt-init; chmod 755 $R/opt/mu300/bin/mu300-bt-init; }
 [ -e /in/keys ] && { cp /in/keys $R/opt/mu300/bin/mu300-keys; chmod 755 $R/opt/mu300/bin/mu300-keys; }
+[ -e /in/atd-io ] && { cp /in/atd-io $R/opt/mu300/bin/mu300-atd-io; chmod 755 $R/opt/mu300/bin/mu300-atd-io; }
 # full static busybox for the tools OpenWrt busybox leaves out (od, timeout, mountpoint, losetup, rfkill, telnetd)
 if [ -e /in/busybox ]; then
     cp /in/busybox $R/opt/mu300/bin/busybox; chmod 755 $R/opt/mu300/bin/busybox
@@ -298,7 +305,7 @@ unset root_hash
 # enable the services (rc.common "enable" needs ubus, which is not running in the build container)
 # accounts still those of the image until an installer or mu300-update puts the device ones in place
 : > $R/etc/.mu300-accounts-from-image
-for s in mu300-accounts mu300-cpu-driver mu300-vendor mu300-charge-mode mu300-hw mu300-post mu300-toolkit mu300-atd mu300-network-recovery mu300-modem-log mu300-wifi-client mu300-buttons mu300-ndp mu300-smsd mu300-user-packages unisoc-battery ttyd; do
+for s in mu300-accounts mu300-cpu-driver mu300-service-cpus mu300-vendor mu300-charge-mode mu300-hw mu300-post mu300-toolkit mu300-atd mu300-network-recovery mu300-modem-log mu300-wifi-client mu300-sysd mu300-ndp mu300-smsd mu300-user-packages unisoc-battery ttyd; do
     n=$(sed -n "s/^START=//p" $R/etc/init.d/$s)
     ln -sf ../init.d/$s $R/etc/rc.d/S$n$s
 done
@@ -310,6 +317,7 @@ if [ -d /in/luci-plugin ]; then
     ln -sf ../init.d/unisoc-sms-forward $R/etc/rc.d/S$n"unisoc-sms-forward"
     n=$(sed -n "s/^START=//p" $R/etc/init.d/unisoc-traffic)
     ln -sf ../init.d/unisoc-traffic $R/etc/rc.d/S$n"unisoc-traffic"
+    ln -sf ../init.d/unisoc-ttl $R/etc/rc.d/S97unisoc-ttl
     ln -sf ../init.d/unisoc-traffic $R/etc/rc.d/K01unisoc-traffic
     ln -sf ../init.d/unisoc-cpu $R/etc/rc.d/S99unisoc-cpu
     ln -sf ../init.d/unisoc-cpu-cores $R/etc/rc.d/S99unisoc-cpu-cores

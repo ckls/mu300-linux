@@ -30,6 +30,6 @@ class Hotspot(ShellTest):
             source=(TOP/'tools'/name).read_text()
             self.assertIn('./usr/libexec/unisoc-modem/hotspot ',source)
             self.assertIn('./usr/libexec/unisoc-modem/hotspot.uc ',source)
-        info=(LIB/'dashboard-info').read_text()
-        self.assertIn('/hotspot" fields',info)
+        info=(APP/'root/usr/share/ucode/mu300/dash.uc').read_text()
+        self.assertIn('hotspot.status(',info)
         self.assertNotIn('wireless.radio0.',info)

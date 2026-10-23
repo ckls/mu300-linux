@@ -27,6 +27,10 @@ case "${1:-}" in
     thermal) "$LED" alarm on ;;
     boot|modem|registering|online-4g|online-5g|offline)
         echo "$1" > "$RUN/led-status.state"
+        case "$1" in
+            boot) "$LED" boot on ;;
+            online-4g|online-5g|offline) "$LED" boot off ;;
+        esac
         network "$1"
         "$LED" battery ;;
     *) exit 1 ;;

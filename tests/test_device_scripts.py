@@ -396,6 +396,15 @@ class ThermalGuard(ShellTest):
         self.device('u30air')
         self.stub('logger', ':')
         self.stub('poweroff', 'echo poweroff >> "$STUBLOG/calls"')
+        # BusyBox standalone ash can bypass PATH stubs for its built-in applets.
+        # Never invoke the host's poweroff/logger while testing a fake sysroot.
+        code = (BIN / 'thermal-guard').read_text()
+        self.assertIn('\n        poweroff\n', code)
+        self.assertIn('logger -t ', code)
+        code = code.replace('logger -t ', str(self.stubs / 'logger') + ' -t ')
+        code = code.replace('\n        poweroff\n', '\n        ' + str(self.stubs / 'poweroff') + '\n')
+        self.guard = self.tmp / 'thermal-guard'
+        self.guard.write_text(code)
 
     def device(self, name):
         (self.root / 'run/mu300').mkdir(parents=True, exist_ok=True)
@@ -413,7 +422,7 @@ class ThermalGuard(ShellTest):
             (b / 'type').write_text('Battery\n')
             (b / 'temp').write_text(f'{battery}\n')
         (self.tmp / 'calls').unlink(missing_ok=True)
-        r = self.script(shell, BIN / 'thermal-guard', MU300_SYSROOT=self.root, MU300_BIN=self.bin)
+        r = self.script(shell, self.guard, MU300_SYSROOT=self.root, MU300_BIN=self.bin)
         self.assertEqual(r.returncode, 0, r.stderr)
         return (self.tmp / 'calls').read_text().splitlines() if (self.tmp / 'calls').exists() else []
 
@@ -686,9 +695,14 @@ class Ttl(ShellTest):
         # nft records its arguments, and the ruleset it is given on stdin
         self.stub('nft', 'echo "$*" >> "$STUBLOG/nft.args"; [ "$1" = -f ] && cat >> "$STUBLOG/nft.in"; '
                          '[ "$1" = list ] && exit 1; exit 0')
+        self.entry = self.tmp / 'mu300-ttl'
+        code = (BIN / 'mu300-ttl').read_text()
+        self.assertIn('$(id -u)', code)
+        code = code.replace('$(id -u)', '$(' + str(self.stubs / 'id') + ' -u)')
+        self.entry.write_text(code)
 
     def ttl(self, shell, *args):
-        return self.script(shell, BIN / 'mu300-ttl', *args, MU300_TTL_CONF=self.conf)
+        return self.script(shell, self.entry, *args, MU300_TTL_CONF=self.conf)
 
     def reset(self):
         for f in ('nft.args', 'nft.in'):
@@ -767,6 +781,13 @@ class Usb(ShellTest):
         self.stub('i2cget', '[ "$1" = -y ] && shift; cat "$STUBLOG/reg-$3" 2>/dev/null || echo 0x00')
         self.stub('i2cset', '[ "$1" = -y ] && shift; printf "0x%02x\\n" $(( $4 )) > "$STUBLOG/reg-$3"; '
                             'echo "$3=$(( $4 ))" >> "$STUBLOG/writes"')
+        self.entry = self.tmp / 'mu300-usb'
+        code = (BIN / 'mu300-usb').read_text()
+        self.assertIn('$(id -u)', code)
+        self.assertIn('"i2c$op"', code)
+        code = code.replace('$(id -u)', '$(' + str(self.stubs / 'id') + ' -u)')
+        code = code.replace('"i2c$op"', '"' + str(self.stubs) + '/i2c$op"')
+        self.entry.write_text(code)
 
     def regs(self, **values):
         for k, v in values.items():
@@ -776,7 +797,7 @@ class Usb(ShellTest):
         return int((self.tmp / f'reg-{r}').read_text(), 16)
 
     def usb(self, shell, *args):
-        return self.script(shell, BIN / 'mu300-usb', *args, MU300_SYSROOT=self.root,
+        return self.script(shell, self.entry, *args, MU300_SYSROOT=self.root,
                            PATH=f'{self.stubs}:{BIN}:/usr/bin:/bin')
 
     def role(self):

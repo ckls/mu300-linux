@@ -9,7 +9,8 @@ NDP = TOP / 'openwrt/overlay/opt/mu300/bin/ndp-learn'
 class PrefixWithdrawal(ShellTest):
     def setUp(self):
         super().setUp()
-        self.lib = NDP.read_text().split('\ncase ${1:-} in', 1)[0]
+        source=NDP.read_text()
+        self.lib = 'IFACE=sipa_eth0\nIF_INET6=${MU300_IF_INET6:-/proc/net/if_inet6}\n' + source[source.index('bearer_prefixes() {'):source.index('\ncase ${1:-} in')]
         self.stub('logger', ':')
         self.stub('uci', 'printf "%s\\n" "${RA_MODE:-relay}"')
         self.stub('ip', 'printf "%s\\n" "${DEFAULT_ROUTE:-default via fe80::1 dev sipa_eth0 expires 1234sec}"')
@@ -69,7 +70,7 @@ class PrefixWithdrawal(ShellTest):
 
     def test_our_routing_and_build_dependency_remain(self):
         text = NDP.read_text()
-        for keep in ('metric 1024', 'route del "$r/128" dev sipa_eth0', 'route add "$a/128" dev br-lan', 'accept_ra'):
+        for keep in ('metric 1024', 'route del "$r/128" dev "$IFACE"', 'route add "$a/128" dev br-lan', 'accept_ra'):
             self.assertIn(keep, text)
         build = (TOP / 'openwrt/build-rootfs.sh').read_text()
         self.assertIn('ucode-mod-socket', build)

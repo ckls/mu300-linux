@@ -27,8 +27,9 @@ docker build -q --build-arg BASE=ubuntu:26.04 -t mu300-ubuntu:26.04 "$TOP/rootfs
 docker run --rm mu300-ubuntu:24.04 cat /bin/busybox > "$IN/busybox"; chmod +x "$IN/busybox"
 docker run --rm -v "$TOP/tools":/src:ro -v "$IN/tools":/o mu300-kbuild sh -c '
   gcc -O2 -static -o /o/logdw/logdw /src/logdw/logdw.c &&
-  gcc -O2 -static -o /o/bt-init/mu300-bt-init /src/bt-init/mu300-bt-init.c &&
-  mkdir -p /o/keys && gcc -O2 -static -o /o/keys/mu300-keys /src/keys/mu300-keys.c'
+  gcc -O2 -static -o /o/bt-init/mu300-bt-init /src/bt-init/mu300-bt-init.c'
+sh "$TOP/tools/keys/build.sh" "$IN/tools/keys"
+sh "$TOP/tools/atd-io/build.sh" "$IN/tools/atd-io"
 # cltest links against Android's libraries at build time only; use a local build when there is one
 [ -f "$TOP/tools/gpu/cltest" ] && cp "$TOP/tools/gpu/cltest" "$IN/tools/gpu/cltest"
 sh "$TOP/tools/fetch-sing-box.sh" "$IN/sing-box"
@@ -70,7 +71,7 @@ for u in 24.04 26.04; do
     cltest=""; [ -f "$IN/tools/gpu/cltest" ] && cltest="-v $IN/tools/gpu/cltest:/cltest:ro"
     # shellcheck disable=SC2086
     docker run --rm -v "$B":/w -v "$IN/out/modules":/kmods:ro -v "$IN/out":/kout:ro -v "$IN/tools/logdw/logdw":/logdw:ro \
-      -v "$IN/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$IN/tools/keys/mu300-keys":/keys:ro -v "$IN/sing-box":/sing-box:ro -v "$IN/xray":/xray:ro -v "$IN/hev-socks5-tunnel":/hev-socks5-tunnel:ro $cltest \
+      -v "$IN/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$IN/tools/keys/mu300-keys":/keys:ro -v "$IN/tools/atd-io/mu300-atd-io":/atd-io:ro -v "$IN/sing-box":/sing-box:ro -v "$IN/xray":/xray:ro -v "$IN/hev-socks5-tunnel":/hev-socks5-tunnel:ro $cltest \
       -e MU300_VERSION="$TAG" mu300-ubuntu:$u bash /w/assemble.sh >/dev/null
     out=mu300-ubuntu-rootfs.tar.gz; [ $u = 24.04 ] || out=mu300-ubuntu-$u-rootfs.tar.gz
     mv "$B/mu300-ubuntu-$u-rootfs.tar.gz" "$D/$out"; rm -rf "$B"
@@ -81,14 +82,14 @@ MU300_INPUTS="$IN" MU300_LUCI_PLUGIN_SRC="$TOP/openwrt/luci-app-mu300" MU300_VER
     sh "$TOP/openwrt/build-rootfs.sh" mu300-openwrt-release.tar.gz >/dev/null
 mv "$TOP/openwrt/mu300-openwrt-release.tar.gz" "$D/mu300-openwrt-rootfs.tar.gz"
 for f in ./opt/mu300/bin/mu300-at ./opt/mu300/bin/mobile-data \
-    ./opt/mu300/bin/mu300-data-sim-u30 ./opt/mu300/bin/mu300-sim-u30 ./opt/mu300/bin/mu300-sim2-start ./opt/mu300/bin/mu300-sim2-warmup ./opt/mu300/lib/sim-config.sh \
+    ./opt/mu300/bin/mu300-data-sim-u30 ./opt/mu300/bin/mu300-sim-u30 \
     ./opt/mu300/bin/mu300-user-packages ./etc/init.d/mu300-user-packages ./etc/mu300/image-packages \
     ./opt/mu300/lib/wifi-channels.sh ./usr/share/ucode/wifi/hostapd.uc ./opt/mu300/bin/v50-led-status ./opt/mu300/bin/mu300-platform-config ./opt/mu300/bin/mu300-sim-env ./opt/mu300/bin/mu300-data-sim ./opt/mu300/bin/mu300-dual-radio ./usr/share/luci/menu.d/luci-app-mu300.json ./www/luci-static/resources/view/mu300/home.js \
     ./lib/netifd/hostapd-unisoc.sh ./usr/share/ucode/wifi/unisoc-sae.uc \
     ./etc/mu300/wifi-sae.build-id \
     ./opt/mu300/bin/mu300-smsd ./opt/mu300/bin/mu300-sms ./etc/init.d/mu300-smsd \
     ./www/luci-static/resources/mu300/refresh.js ./www/luci-static/resources/view/mu300/sms.css \
-    ./usr/libexec/unisoc-modem/dashboard-rates ./usr/libexec/unisoc-modem/dashboard-network.sh ./usr/libexec/unisoc-modem/operator.uc \
+    ./usr/libexec/unisoc-modem/dashboard-rates ./usr/libexec/unisoc-modem/dashboard-network.sh ./usr/share/ucode/mu300/dash.uc ./usr/share/rpcd/ucode/mu300status.uc ./opt/mu300/bin/mu300-service-cpus ./usr/share/ucode/mu300/service-cpus.uc ./opt/mu300/bin/wifi-ready ./usr/libexec/unisoc-modem/operator.uc \
     ./usr/libexec/unisoc-modem/refresh-config \
     ./usr/libexec/unisoc-modem/lock ./usr/libexec/unisoc-modem/boot-replay ./usr/libexec/unisoc-modem/sim-scope.sh \
     ./usr/libexec/unisoc-modem/lock-apply.sh ./usr/libexec/unisoc-modem/lock-jobs.sh \

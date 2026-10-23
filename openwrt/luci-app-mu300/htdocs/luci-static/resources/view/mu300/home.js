@@ -622,10 +622,10 @@ return view.extend({
 		M.v('batt-bar').style.width = (batteryPct == null ? 0 : batteryPct) + '%';
 		if (p.present && p.capacity != null) {
 			M.set('batt', p.capacity + '%');
-			M.set('batt-l', (p.status || '--') + (p.volt != null ? ' · ' + p.volt + ' V' : '') + ' · ' + M.fmtBatteryCurrent(p.ua) + (p.usb ? ' · USB' : ''));
+			M.set('batt-l', (p.status || '--') + (Number.isFinite(p.volt) ? ' · ' + p.volt.toFixed(2) + ' V' : '') + ' · ' + M.fmtBatteryCurrent(p.ua) + (p.usb ? ' · USB' : ''));
 		} else {
 			M.set('batt', p.usb ? 'USB' : '--');
-			M.set('batt-l', '电源' + (p.volt != null ? ' · ' + p.volt + ' V' : ''));
+			M.set('batt-l', '电源' + (Number.isFinite(p.volt) ? ' · ' + p.volt.toFixed(2) + ' V' : ''));
 		}
 		M.set('model', i.model || '--');
 		M.set('fwos', i.fw || '--');

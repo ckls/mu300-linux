@@ -4,7 +4,9 @@
 # 5.4 vendor kernel: all four are modules. Mainline: the PCIe host is built in, wcn_bsp/sprd_wlan_combo are
 # out-of-tree modules in /lib/modules/<release>.
 set -e
+[ ! -x /opt/mu300/bin/bootmark ] || /opt/mu300/bin/bootmark wifi-index-enter
 command -v depmod >/dev/null && depmod -a
+[ ! -x /opt/mu300/bin/bootmark ] || /opt/mu300/bin/bootmark wifi-index-ready
 [ -e /sys/class/net/wlan0 ] && exit 0   # the WCN drivers cannot be reloaded; never load them twice
 for m in pcie-sprd-misc pcie-sprd; do
     modprobe "$m" 2>/dev/null || [ -d /sys/bus/platform/drivers/sprd-pcie ]
@@ -18,6 +20,7 @@ for m in wcn_bsp sprd_wlan_combo; do
     [ -f "$f" ] || f=$K/extra/$m.ko
     [ -f "$f" ] || { echo "missing $m.ko" >&2; exit 1; }
     insmod "$f"
+    [ ! -x /opt/mu300/bin/bootmark ] || /opt/mu300/bin/bootmark "wifi-module-$m-loaded"
 done
 for n in $(seq 1 30); do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done
 # wcn_bsp turns the Marlin3 firmware (ARM) log on at boot; every firmware log packet is printed to the kernel log

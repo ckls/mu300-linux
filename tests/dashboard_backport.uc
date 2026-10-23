@@ -3,11 +3,14 @@
 //   mu300-openwrt-base:25.12.5 /src/tests/dashboard_backport.uc
 import { popen, writefile, mkdir, readfile } from 'fs';
 if (getenv('MU300_TEST_CONTAINER') != '1') die('Disposable container required\n');
-const lib = '/src/openwrt/luci-app-mu300/root/usr/libexec/unisoc-modem/';
+const repo = ARGV[0] || '/src';
+const lib = repo + '/openwrt/luci-app-mu300/root/usr/libexec/unisoc-modem/';
 let checks = 0;
 function check(ok, label) { if (!ok) die('FAIL: ' + label + '\n'); checks++; }
 function quote(s) { return "'" + replace(s, /'/g, "'\\''") + "'"; }
 function run(cmd) {
+	if (substr(cmd, 0, 6) == 'ucode ')
+		cmd = 'ucode -L ' + quote(repo + '/openwrt/luci-app-mu300/root/usr/share/ucode/*.uc') + ' ' + substr(cmd, 6);
 	const p = popen(cmd, 'r');
 	const out = p.read('all');
 	check(p.close() == 0, 'command: ' + cmd);

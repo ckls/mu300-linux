@@ -1,0 +1,4 @@
+# The interrupts Linux enabled as wake sources of the UMS9620's CPU cluster power-down (LP_AP_INTC) for the
+# mainline kernels; no vendor headers. Loaded by extra-modules.
+# Source: https://github.com/dikeckaan/mu300-linux/pull/373 (liuwang97).
+obj-m += ums9620_lpintc.o

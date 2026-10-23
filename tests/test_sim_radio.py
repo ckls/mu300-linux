@@ -183,17 +183,15 @@ esac''')
             self.assertEqual((self.tmp/'sim-radio-policy').read_text(),'1 1\n')
             self.assertNotIn('SFUN=',(self.tmp/'at').read_text())
 
-    def test_u30_inactive_permission_changes_preserve_cold_stack_baseline(self):
+    def test_u30_both_slots_have_real_manual_rf_controls(self):
         self.stub('mu300-device','echo u30air')
         for shell in self.each_shell():
-            (self.tmp/'state').write_text('[1,0]')
             for enabled in ('0','1'):
-                result=self.call(shell,'apply','1',enabled)
+                (self.tmp/'state').write_text('[1,1]')
+                result=self.call(shell,'apply','1',enabled,SIM_POWERED='1')
                 self.assertEqual(result.returncode,0,result.stderr)
-                self.assertEqual(json.loads((self.tmp/'state').read_text()),[1,0])
+                self.assertEqual(json.loads((self.tmp/'state').read_text()),[1,1 if enabled=='1' else 2])
                 self.assertEqual((self.tmp/'sim-radio-policy').read_text(),f'1 {enabled}\n')
-                self.assertFalse((self.tmp/'at').exists())
-                self.assertFalse((self.tmp/'ubus').exists())
 
     def test_single_sim_radio_jobs_do_not_require_dual_sim_switch_adapter(self):
         source=(TOP/'openwrt/luci-app-mu300/root/usr/libexec/unisoc-modem/data-sim').read_text()

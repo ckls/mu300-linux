@@ -6,7 +6,7 @@ SCRIPT=TOP/'rootfs/overlay/opt/mu300/bin/mu300-data-sim'
 
 class DataSim(ShellTest):
     def setUp(self):
-        super().setUp()
+        ShellTest.setUp(self)
         self.db=self.tmp/'state.json'
         self.envlib=self.tmp/'sim-env'
         self.envlib.write_text('''mu300_sim_env() {

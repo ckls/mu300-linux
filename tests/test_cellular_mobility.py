@@ -185,6 +185,8 @@ class Watchdog(ShellTest):
         self.context = MOBILE[MOBILE.index('watch_context_state() {'):MOBILE.index('\nwatch() {')]
         self.watch = MOBILE[MOBILE.index('watch() {'):MOBILE.index('\n# Radio quality')]
         self.watch = self.watch.replace('/run/', str(self.tmp) + '/')
+        self.event_transport=self.tmp/'event-transport.sh'
+        self.event_transport.write_text('watch_events_start() { :; }\nwatch_events_stop() { :; }\nwatch_next() { sleep "${MU300_WATCH_INTERVAL:-30}"; }\n')
         self.stub('sleep', '''
 n=$(cat "$STUBLOG/round" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" >"$STUBLOG/round"
 [ "$n" -le "${ROUNDS:-1}" ] || exit 99
@@ -225,7 +227,7 @@ at() {
 }
 watch
 '''
-        r = self.sh(['bash'], code, **env)
+        r = self.sh(['bash'], code, **dict(dict(MU300_DATA_EVENTS_LIB=self.event_transport),**env))
         self.assertEqual(r.returncode, 99, r.stderr)
         return (self.tmp / 'calls').read_text()
 

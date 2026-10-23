@@ -1,0 +1,28 @@
+PCI: dwc: allow an explicitly deferred endpoint at initial host probe
+
+Port of liuwang97/boot-speed 1fb42beb to the 7.2 host-init error handling.
+Only the controller opting in skips the initial wait; resume keeps the full
+training wait. Marlin3 is powered later by wcn_bsp/configure_device.
+
+--- a/drivers/pci/controller/dwc/pcie-designware.h
++++ b/drivers/pci/controller/dwc/pcie-designware.h
+@@ -470,6 +470,8 @@
+ 	bool			ecam_enabled;
+ 	bool			native_ecam;
+ 	bool                    skip_l23_ready;
++	bool			skip_link_wait;
++#define DW_PCIE_HAS_SKIP_LINK_WAIT
+ 	bool			skip_pwrctrl_off;
+ };
+ 
+--- a/drivers/pci/controller/dwc/pcie-designware-host.c
++++ b/drivers/pci/controller/dwc/pcie-designware-host.c
+@@ -662,7 +662,7 @@
+ 	 * Only fail on timeout error. Other errors indicate the device may
+ 	 * become available later, so continue without failing.
+ 	 */
+-	ret = dw_pcie_wait_for_link(pci);
++	ret = pp->skip_link_wait ? 0 : dw_pcie_wait_for_link(pci);
+ 	if (ret == -ETIMEDOUT)
+ 		goto err_stop_link;
+ 

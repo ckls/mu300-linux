@@ -1,6 +1,7 @@
 """U30 status events own three independent physical lamp groups."""
 import os
 import subprocess
+import shutil
 from pathlib import Path
 from helpers import BIN,ShellTest
 
@@ -31,6 +32,79 @@ esac""")
         return r.stdout.strip()
 
     def value(self,name):return (self.lamps/name/'brightness').read_text().strip()
+
+    def led(self, shell, *args, **extra):
+        return self.script(shell, BIN/'mu300-led', *args, **dict(self.extra, **extra))
+
+    def test_boot_frames_survive_power_refresh_and_leave_other_lamps_independent(self):
+        for shell in self.each_shell():
+            state=self.root/'run/mu300/led';state.mkdir(exist_ok=True)
+            token=state/'.boot-chase';token.write_text('test-owner\n')
+            try:
+                for channel in ('red','green','blue'):
+                    r=self.led(shell,'boot-frame','test-owner','sc27xx:'+channel,TEST_BRIGHTNESS='40')
+                    self.assertEqual(r.returncode,0,r.stderr)
+                    self.apply(shell,'battery');self.apply(shell,'refresh');self.apply(shell,'wifi-on')
+                    self.assertEqual([self.value('sc27xx:'+c) for c in ('red','green','blue')],
+                                     ['40' if c==channel else '0' for c in ('red','green','blue')])
+                    self.assertEqual(self.value('zte-ldo1'),'1')
+                self.apply(shell,'online-5g')
+                self.assertFalse(token.exists())
+                self.assertEqual(self.value('sc27xx:green'),'255')
+                self.assertEqual(self.value('sc27xx:blue'),'0')
+                self.assertEqual(self.value('zte-ldo0'),'1')
+                r=self.led(shell,'boot-frame','test-owner','sc27xx:red')
+                self.assertEqual(r.returncode,1)
+                self.assertEqual(self.value('sc27xx:red'),'0')
+            finally:
+                token.unlink(missing_ok=True)
+
+    def test_boot_respects_disabled_battery_and_rejects_old_worker_token(self):
+        for shell in self.each_shell():
+            state=self.root/'run/mu300/led';state.mkdir(exist_ok=True)
+            token=state/'.boot-chase';token.write_text('new-owner\n')
+            try:
+                r=self.led(shell,'boot-frame','old-owner','sc27xx:red')
+                self.assertEqual(r.returncode,1)
+                r=self.led(shell,'boot-frame','new-owner','sc27xx:red',TEST_BATTERY='0')
+                self.assertEqual(r.returncode,0,r.stderr)
+                self.assertTrue(all(self.value('sc27xx:'+c)=='0' for c in ('red','green','blue')))
+            finally:
+                token.unlink(missing_ok=True)
+
+    def test_boot_worker_exits_on_handoff_and_cannot_outlive_its_token(self):
+        if not shutil.which('busybox'): self.skipTest('bundled BusyBox applets required')
+        for shell in self.each_shell():
+            state=self.root/'run/mu300/led';state.mkdir(exist_ok=True)
+            token=state/'.boot-chase';token.write_text('worker-test\n')
+            proc=subprocess.Popen(shell+[str(BIN/'mu300-led'),'boot-worker','worker-test'],
+                                  env=self.env(**dict(self.extra,MU300_BUSYBOX=shutil.which('busybox'))),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            try:
+                import time
+                time.sleep(.4)
+                self.assertIsNone(proc.poll())
+                self.apply(shell,'offline')
+                _,err=proc.communicate(timeout=5)
+                self.assertEqual(proc.returncode,0,err)
+                self.assertEqual(self.value('sc27xx:green'),'255')
+                self.assertEqual(self.value('sc27xx:red'),'0')
+            finally:
+                token.unlink(missing_ok=True)
+                if proc.poll() is None: proc.kill();proc.communicate()
+
+    def test_thermal_owner_prevents_boot_start_and_frames(self):
+        for shell in self.each_shell():
+            state=self.root/'run/mu300/led';state.mkdir(exist_ok=True)
+            siren=self.root/'run/mu300/led-siren.pid';siren.write_text(str(os.getpid())+'\n')
+            token=state/'.boot-chase'
+            try:
+                r=self.led(shell,'boot','on');self.assertEqual(r.returncode,0,r.stderr)
+                self.assertFalse(token.exists())
+                token.write_text('thermal-test\n')
+                r=self.led(shell,'boot-frame','thermal-test','sc27xx:red')
+                self.assertEqual(r.returncode,1)
+            finally:
+                token.unlink(missing_ok=True);siren.unlink(missing_ok=True)
 
     def test_events_do_not_confuse_network_with_battery_and_wifi(self):
         for shell in self.each_shell():
@@ -107,6 +181,35 @@ esac""")
             self.assertEqual((self.lamps/'sc27xx:green/trigger').read_text().strip(),'none')
             self.assertEqual(self.value('sc27xx:green'),'255');self.assertEqual(self.value('sc27xx:blue'),'0')
             (self.battery/'status').write_text('Charging\n')
+
+    def test_low_charge_breathing_boundaries_and_unplug(self):
+        for shell in self.each_shell():
+            online=self.root/'sys/class/power_supply/bq256xx-charger/online'
+            online.parent.mkdir(exist_ok=True);online.write_text('1\n')
+            (self.battery/'status').write_text('Charging\n')
+            for cap, channel in [(0,'red'),(9,'red'),(10,'blue'),(49,'blue'),(50,'green'),(9,'red')]:
+                for name in ('red','green','blue'):
+                    lamp=self.lamps/('sc27xx:'+name)
+                    (lamp/'trigger').write_text('[none] timer pattern\n')
+                    (lamp/'hw_pattern').write_text('');(lamp/'repeat').write_text('0\n')
+                (self.battery/'capacity').write_text(str(cap)+'\n')
+                self.apply(shell,'battery',TEST_BRIGHTNESS='40')
+                state=self.root/'run/mu300/led'
+                self.assertEqual((state/'.battery-breathe').read_text().strip(),'sc27xx:'+channel)
+                lamp=self.lamps/('sc27xx:'+channel)
+                self.assertEqual((lamp/'trigger').read_text().strip(),'pattern')
+                self.assertEqual((lamp/'hw_pattern').read_text().strip(),'0 625 40 750 0 625 0 250')
+                for other in {'red','green','blue'}-{channel}:
+                    self.assertEqual(self.value('sc27xx:'+other),'0')
+            self.apply(shell,'refresh',TEST_BATTERY='0')
+            self.assertTrue(all(self.value('sc27xx:'+c)=='0' for c in ('red','green','blue')))
+            # A stale FGU Charging status after unplug must not keep red
+            # breathing active or change the existing discharging policy.
+            online.write_text('0\n')
+            self.apply(shell,'battery')
+            self.assertFalse((state/'.battery-breathe').exists())
+            self.assertEqual(self.value('sc27xx:red'),'0')
+            self.assertEqual(self.value('sc27xx:blue'),'255')
 
     def test_remaining_charge_color_boundary_never_changes_timeout(self):
         for shell in self.each_shell():

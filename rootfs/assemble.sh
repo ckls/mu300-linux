@@ -23,7 +23,7 @@ if [ -n "$miss" ]; then
 fi
 # Optional inputs decide whether the image can use the modem, Wi-Fi and the GPU at all. Missing ones used to
 # pass silently and produce an image that boots and does nothing useful, so say what went in.
-for o in /firmware /android-subset /android-gpu-subset /bt-init /keys /cltest /sing-box /xray /hev-socks5-tunnel; do
+for o in /firmware /android-subset /android-gpu-subset /bt-init /keys /atd-io /cltest /sing-box /xray /hev-socks5-tunnel; do
     [ -e "$o" ] && echo "assemble.sh: + $o" || echo "assemble.sh: - $o (not mounted; the image will be built without it)"
 done
 
@@ -61,6 +61,7 @@ if [ -e /cltest ]; then install -D -m755 /cltest $R/opt/mu300/android/system/bin
 if [ -e /bt-init ]; then cp /bt-init $R/opt/mu300/bin/mu300-bt-init; fi
 # tools/keys build (static arm64): the buttons (mu300-buttons)
 if [ -e /keys ]; then install -m755 /keys $R/opt/mu300/bin/mu300-keys; fi
+if [ -e /atd-io ]; then install -m755 /atd-io $R/opt/mu300/bin/mu300-atd-io; fi
 # VLESS clients for mu300-vpn: the xray engine (tools/fetch-xray.sh) and sing-box (tools/fetch-sing-box.sh)
 if [ -f /sing-box ]; then install -m755 /sing-box $R/opt/mu300/bin/sing-box; fi
 if [ -f /xray ]; then install -m755 /xray $R/opt/mu300/bin/xray; fi

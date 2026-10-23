@@ -118,12 +118,14 @@ def input_check(common, rows):
     if missing:
         raise ValueError('Missing registered inputs (nothing was built/copied):\n' + '\n'.join(missing))
     required = ['dumps/boot_a.img', 'dumps/misc-head.bin', 'busybox', 'tools/logdw/logdw',
-                'firmware', 'android-subset', 'tools/bt-init/mu300-bt-init', 'tools/keys/mu300-keys']
+                'firmware', 'android-subset', 'tools/bt-init/mu300-bt-init', 'tools/keys/mu300-keys', 'tools/atd-io/mu300-atd-io']
     required += ['out/modules/' + n for n in ('wcn_bsp.ko', 'sprd_wlan_combo.ko', 'sprdbt_tty.ko', 'mali_kbase.ko')]
     missing = [str(common['inputs'] / n) for n in required if not (common['inputs'] / n).exists()]
     if not (common['desktop_tools'] / 'lib/ld-musl-aarch64.so.1').is_file():
         missing.append(str(common['desktop_tools'] / 'lib/ld-musl-aarch64.so.1'))
     if missing: raise ValueError('Missing registered MU300 inputs:\n' + '\n'.join(missing))
+    runpy.run_path(str(TOP / 'tools/atd-io/artifact.py'))['check'](common['inputs'] / 'tools/atd-io/mu300-atd-io')
+    runpy.run_path(str(TOP / 'tools/atd-io/artifact.py'))['check'](common['inputs'] / 'tools/keys/mu300-keys', TOP / 'tools/keys/mu300-keys.c')
     runpy.run_path(str(TOP / 'openwrt/wifi-sae-state.py'))['inspect'](common['wifi_apks'])
     block = common['block_apk']
     block_sources = ('block-mount.Dockerfile', 'build-block-mount.sh', 'build-block-mount-inner.sh',

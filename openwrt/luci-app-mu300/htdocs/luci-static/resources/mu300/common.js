@@ -53,13 +53,13 @@ function simSelector(root) {
         select.onchange=function() { selectViewedSlot(select.value); location.reload(); };
     }).catch(function() {});
 }
-var callRates = rpc.declare({ object: 'mu300dash', method: 'rates', nobatch: true, expect: { '': {} } });
-var callCells = scopedRpc({ object: 'mu300dash', method: 'cells', nobatch: true, expect: { '': {} } });
-var callStatus = scopedRpc({ object: 'mu300dash', method: 'status', nobatch: true, expect: { '': {} } });
-var callSignal = scopedRpc({ object: 'mu300dash', method: 'signal', nobatch: true, expect: { '': {} } });
-var callSysinfo = rpc.declare({ object: 'mu300dash', method: 'sysinfo', nobatch: true, expect: { '': {} } });
+var callRates = rpc.declare({ object: 'mu300rates', method: 'rates', nobatch: true, expect: { '': {} } });
+var callCells = scopedRpc({ object: 'mu300status', method: 'cells', nobatch: true, expect: { '': {} } });
+var callStatus = scopedRpc({ object: 'mu300status', method: 'status', nobatch: true, expect: { '': {} } });
+var callSignal = scopedRpc({ object: 'mu300.modem', method: 'signal', nobatch: true, expect: { '': {} } });
+var callSysinfo = rpc.declare({ object: 'mu300status', method: 'sysinfo', nobatch: true, expect: { '': {} } });
 var callAct    = scopedRpc({ object: 'mu300dash', method: 'act', params: [ 'op', 'arg' ], expect: { '': {} } });
-var callAt     = scopedRpc({ object: 'mu300dash', method: 'at', params: [ 'cmd' ], expect: { '': {} } });
+var callAt     = scopedRpc({ object: 'mu300dash', method: 'at', nobatch: true, params: [ 'cmd' ], expect: { '': {} } });
 var callAtHist = scopedRpc({ object: 'mu300dash', method: 'at_history', expect: { '': {} } });
 var callLockGet = scopedRpc({ object: 'mu300dash', method: 'lock_get', nobatch: true, expect: { '': {} } });
 var callLockFresh = scopedRpc({ object: 'mu300dash', method: 'lock_get', nobatch: true, params: [ 'fresh' ], expect: { '': {} } });
@@ -89,6 +89,7 @@ function waitLockJob(started, active) {
 		check();
 	});
 }
+var callSmsHead = scopedRpc({ object: 'mu300status', method: 'sms_head', nobatch: true, expect: { '': {} } });
 var callSmsList = scopedRpc({ object: 'mu300dash', method: 'sms_list', params: [ 'page' ], expect: { '': {} } });
 var callSmsShow = scopedRpc({ object: 'mu300dash', method: 'sms_show', params: [ 'id' ], expect: { '': {} } });
 var callSmsSend = scopedRpc({ object: 'mu300dash', method: 'sms_send', params: [ 'num', 'text' ], expect: { '': {} } });
@@ -104,6 +105,8 @@ var callForwardTest = rpc.declare({ object: 'mu300dash', method: 'forward_test',
 var callTrafficGet = scopedRpc({ object: 'mu300dash', method: 'traffic_get', expect: { '': {} } });
 var callTrafficSet = scopedRpc({ object: 'mu300dash', method: 'traffic_set', params: [ 'payload' ], expect: { '': {} } });
 var callTrafficClear = scopedRpc({ object: 'mu300dash', method: 'traffic_clear', nobatch: true, params: [ 'confirm' ], expect: { '': {} } });
+var callTtlGet = rpc.declare({ object: 'mu300dash', method: 'ttl_get', expect: { '': {} } });
+var callTtlSet = rpc.declare({ object: 'mu300dash', method: 'ttl_set', params: [ 'value' ], expect: { '': {} }, nobatch: true });
 var callUsbGet = rpc.declare({ object: 'mu300dash', method: 'usb_get', expect: { '': {} } });
 var callUsbSet = rpc.declare({ object: 'mu300dash', method: 'usb_set', params: [ 'kind', 'value', 'scope', 'auto' ], expect: { '': {} } });
 var callUsbNetList = rpc.declare({ object: 'mu300dash', method: 'usb_net_list', expect: { '': {} } });
@@ -113,6 +116,28 @@ var callUsbNetAdd = rpc.declare({ object: 'mu300dash', method: 'usb_net_add', pa
  * standalone package works in any OpenWrt buildroot without po2lmo or extra
  * language packages. Chinese remains the source/fallback language. */
 var DASH_I18N = {
+	"另一项 TTL 操作正在执行，请稍后重试": ["Another TTL operation is running; please retry shortly", "Başka bir TTL işlemi çalışıyor; biraz sonra yeniden deneyin"],
+	"当前设置": ["Current setting", "Geçerli ayar"],
+	"固定为 %d": ["Fixed at %d", "%d olarak sabit"],
+	"保持不变（默认）": ["Not changed (default)", "Değiştirilmedi (varsayılan)"],
+	"生效规则": ["Rule in force", "Etkin kural"],
+	"流量卸载": ["Flow offloading", "Akış hızlandırma"],
+	"已启用": ["Enabled", "Etkin"],
+	"已禁用": ["Disabled", "Devre dışı"],
+	"蜂窝网络 TTL": ["Cellular TTL", "Mobil veri TTL"],
+	"设为 %d": ["Set %d", "%d ayarla"],
+	"设置": ["Set", "Ayarla"],
+	"关闭 TTL": ["Turn off TTL", "TTL kapat"],
+	"请输入 1 至 255 的整数": ["Enter an integer from 1 to 255", "1 ile 255 arasında tam sayı girin"],
+	"设置会保留到重启后；默认关闭。": ["Settings persist after reboot; disabled by default.", "Ayarlar yeniden başlatmada korunur; varsayılan kapalıdır."],
+	"操作失败：%s": ["Failed: %s", "Başarısız: %s"],
+	"管理连接已断开": ["Management connection lost", "Yönetim bağlantısı kesildi"],
+	"无法读取 TTL 设置": ["Cannot read TTL settings", "TTL ayarı okunamadı"],
+	"无法应用 TTL 设置": ["Cannot apply TTL settings", "TTL ayarı uygulanamadı"],
+	"TTL 无效": ["Invalid TTL", "Geçersiz TTL"],
+	"设置蜂窝出口数据包的 TTL 和 IPv6 跳数限制；仅影响蜂窝网络，不改变 Wi-Fi 或 USB 局域网。": ["Set the TTL and IPv6 hop limit of cellular outbound packets. Local Wi-Fi and USB traffic are unchanged.", "Hücresel çıkışın TTL ve IPv6 atlama sınırını ayarlar. Yerel Wi-Fi ve USB trafiğini değiştirmez."],
+	"启用后会关闭防火墙流量卸载，可能降低转发性能；关闭 TTL 后恢复由本功能修改的卸载设置。": ["Enabling TTL disables firewall flow offloading and may reduce forwarding performance. Turning TTL off restores offloading settings changed by this feature.", "TTL etkinleştirilince akış hızlandırması kapatılır; performans düşebilir. Kapatıldığında bu özelliğin değiştirdiği ayarlar geri yüklenir."],
+
     "自动模式兼容性": ["Automatic mode compatibility", "Otomatik mod uyumluluğu"],
     "机型默认": ["Model default", "Model varsayılanı"],
     "全制式自动（134，含 2G）": ["All-RAT auto (134, includes 2G)", "Tüm teknolojiler otomatik (134, 2G dahil)"],
@@ -1780,17 +1805,25 @@ function notify(title, message, opts) {
 }
 
 /* 新短信监视（每个页面 render 时调用一次，内部单例）：
- * 每 5 s 读一次本地池第 1 页（纯文件读，不打 AT），首次只记基线；
+ * 每 5 s 读取本地池签名，仅变化时读取第 1 页；首次只记基线；
  * 之后出现更大的消息 id 且为收件（mt）时，按手机通知样式弹出
  * 「发件人 + 预览」。池子被清空（id 回落）时静默重建基线。 */
 var smsWatch = null;
 function watchSms() {
 	if (smsWatch) return;
-	smsWatch = { seen: [null,null], inflight: false };
+	smsWatch = { seen: [null,null], heads: [null,null], inflight: false };
 	window.setInterval(function() {
 		if(document.hidden || smsWatch.inflight)return;
 		var slot=Number(selectedSlot()); smsWatch.inflight=true;
-		Promise.resolve(callSmsList(1)).catch(function() { return {}; }).then(function(r) {
+		Promise.resolve(callSmsHead()).then(function(head) {
+			if (!head || head.error) throw new Error(head && head.error || 'Unable to read SMS state');
+			if (Number(selectedSlot()) !== slot) return null;
+			if (head.adapter === true) return callSmsList(1);
+			var signature = JSON.stringify(head);
+			if (smsWatch.heads[slot] === signature) return null;
+			return callSmsList(1).then(function(list) { smsWatch.heads[slot] = signature; return list; });
+		}).then(function(r) {
+			if (!r) return;
 			r = r || {};
 			var msgs = r.msgs || [], max = 0;
 			msgs.forEach(function(m) {
@@ -1807,7 +1840,7 @@ function watchSms() {
 				});
 				smsWatch.seen[slot] = max;
 			}
-		}).finally(function(){smsWatch.inflight=false;});
+		}).catch(function() { /* Keep the baseline: retry the same read on the next tick. */ }).finally(function(){smsWatch.inflight=false;});
 	}, 5000);
 }
 
@@ -1877,7 +1910,7 @@ return baseclass.extend({
 	callForwardSet: callForwardSet, callForwardTest: callForwardTest, callForwardClear: callForwardClear,
 	callTrafficGet: callTrafficGet, callTrafficSet: callTrafficSet,
 	callTrafficClear: callTrafficClear,
-	callUsbGet: callUsbGet, callUsbSet: callUsbSet,
+	callTtlGet: callTtlGet, callTtlSet: callTtlSet, callUsbGet: callUsbGet, callUsbSet: callUsbSet,
 	callUsbNetList: callUsbNetList, callUsbNetAdd: callUsbNetAdd,
 	carrierName: carrierName, qLabel: qLabel, qCol: qCol, qScore: qScore,
 	esc: esc, fmtBatteryCurrent: fmtBatteryCurrent, fmtBytes: fmtBytes, fmtTrafficBytes: fmtTrafficBytes, fmtRate: fmtRate, fmtUptime: fmtUptime, PLMN_CN: PLMN_CN,

@@ -1,105 +1,61 @@
-"""Hot-path shell helpers must preserve the dashboard's JSON wire values."""
+"""Native snapshot regressions retain the original dashboard wire contract."""
 import json
-import shlex
-import shutil
+import tempfile
 import unittest
+from pathlib import Path
+from native_dashboard_fixture import Snapshot
 
-from helpers import ShellTest, TOP
+class DashboardInfo(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name);self.snap=Snapshot(self.root)
 
-
-INFO = TOP / 'openwrt' / 'luci-app-mu300' / 'root' / 'usr' / 'libexec' / 'unisoc-modem' / 'dashboard-info'
-
-
-class DashboardInfo(ShellTest):
     def test_dns_reuses_both_status_snapshots(self):
-        script = INFO.read_text()
-        self.assertIn('wan_dns=$(wan_dns_servers "$WANJSON" "$WAN6JSON")', script)
-        helper = script[script.index('wan_dns_servers() {'):script.index('\nwan_up=')]
-        self.assertIn('jsonfilter -s "$snapshot"', helper)
-        self.assertNotIn('ubus call', helper)
-        self.assertNotIn('jarr_dns', script)
-
-    @unittest.skipUnless(shutil.which('jsonfilter'), 'also run fixture in OpenWrt container/device')
-    def test_dns_with_real_jsonfilter(self):
-        for shell in self.each_shell():
-            result = self.script(shell, TOP/'tests/dashboard_dns_fixture.sh', INFO)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn('PASS dashboard DNS', result.stdout)
-
-    def station_code(self):
-        script = INFO.read_text()
-        helpers = script[script.index('n_or_null() {'):script.index('# ------------------------------------------------------------- temperature')]
-        stations = script[script.index('station_rows() {'):script.index('LAN_LEASES=')]
-        leases = self.tmp / 'leases'
-        leases.write_text('9999999999 E6:7A:77:59:7E:47 192.168.77.105 Xiaomi-17-Pro *\n'
-                          '9999999999 aa:bb:cc:dd:ee:ff 192.168.77.106 * *\n')
-        stations = stations.replace('/tmp/dhcp.leases', str(leases))
-        return helpers + '\nt3() { cat; return "${IW_RC:-0}"; }\n' + stations + '\nprintf \'{"count":%s,"clients":[%s]}\' "$W_CN" "$W_CLIST"'
+        data=self.snap.run()
+        self.assertEqual(data['wan']['dns'],'1.1.1.1, 2001:4860:4860::8888')
+        # inactive DNS must never override the active netifd answer.
+        self.snap.responses['network.interface.wan.status']['inactive']={'dns-server':['WRONG']}
+        self.assertNotIn('WRONG',self.snap.run()['wan']['dns'])
 
     def test_mac_only_station_is_counted_without_fabricated_metrics(self):
-        for shell in self.each_shell():
-            result = self.sh(shell, self.station_code(),
-                             stdin='Station e6:7a:77:59:7e:47 (on wlan0)\n\tcurrent time: 1791393862131 ms\n')
-            self.assertEqual(result.returncode, 0, result.stderr)
-            data = json.loads(result.stdout)
-            self.assertEqual(data['count'], 1)
-            self.assertEqual(data['clients'][0], dict(mac='e6:7a:77:59:7e:47', host='Xiaomi-17-Pro',
-                             ip='192.168.77.105', signal=None, tx=None, rx=None, conn=None))
+        self.snap.stations=[{'mac':'e6:7a:77:59:7e:47'}]
+        data=self.snap.run()['wifi']
+        self.assertEqual(data['clients_n'],1)
+        self.assertEqual(data['clients'][0],dict(mac='e6:7a:77:59:7e:47',host='Xiaomi-17-Pro',ip='192.168.77.105',signal=None,tx=None,rx=None,conn=None))
 
     def test_complete_station_blocks_and_deduplication(self):
-        dump = ('Station E6:7A:77:59:7E:47 (on wlan0)\n\tsignal: -42 [-42] dBm\n'
-                '\ttx bitrate: 866.7 MBit/s VHT-MCS 9\n\trx bitrate: 433.3 MBit/s\n'
-                '\tconnected time: 125 seconds\nStation aa:bb:cc:dd:ee:ff (on wlan0)\n'
-                'Station e6:7a:77:59:7e:47 (on wlan0)\nStation invalid (on wlan0)\n')
-        for shell in self.each_shell():
-            result = self.sh(shell, self.station_code(), stdin=dump)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            data = json.loads(result.stdout)
-            self.assertEqual(data['count'], 2)
-            self.assertEqual(data['clients'][0]['signal'], -42)
-            self.assertEqual(data['clients'][0]['tx'], '866.7 Mbit/s')
-            self.assertEqual(data['clients'][0]['rx'], '433.3 Mbit/s')
-            self.assertEqual(data['clients'][0]['conn'], '2 min')
-            self.assertIsNone(data['clients'][1]['host'])
+        self.snap.stations=[{'mac':'E6:7A:77:59:7E:47','sta_info':{'signal':-42,'tx_bitrate':{'bitrate':8667},'rx_bitrate':{'bitrate':4333},'connected_time':125}},
+                            {'mac':'aa:bb:cc:dd:ee:ff'},{'mac':'e6:7a:77:59:7e:47'},{'mac':'invalid'}]
+        data=self.snap.run()['wifi'];self.assertEqual(data['clients_n'],2)
+        self.assertEqual(data['clients'][0]['signal'],-42)
+        self.assertEqual(data['clients'][0]['tx'],'866.7 Mbit/s')
+        self.assertEqual(data['clients'][0]['rx'],'433.3 Mbit/s')
+        self.assertEqual(data['clients'][0]['conn'],'2 min')
+        self.assertIsNone(data['clients'][1]['host'])
 
     def test_empty_station_table_and_query_failure_are_distinct(self):
-        for shell in self.each_shell():
-            for rc, device, expected in [('0', 'lo', 0), ('1', 'lo', None), ('1', 'mu300-missing-test', 0)]:
-                result = self.sh(shell, self.station_code(), stdin='', IW_RC=rc, WIFI_DEVICE=device)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(json.loads(result.stdout), dict(count=expected, clients=[]))
+        self.snap.responses['hostapd.wlan0.get_clients']=None
+        for stations,count in [([],0),(None,None)]:
+            self.snap.stations=stations
+            self.assertEqual(self.snap.run()['wifi']['clients_n'],count)
+        self.snap.responses['hostapd.wlan0.get_clients']={'clients':{'aa:bb:cc:dd:ee:ff':{}}}
+        self.assertEqual(self.snap.run()['wifi']['clients_n'],1)
 
-    def test_conntrack_prefers_scalar_and_falls_back_only_when_needed(self):
-        script = INFO.read_text()
-        helper = script[script.index('conntrack_count() {'):script.index('CONNS=$(conntrack_count)')]
-        counter, table = self.tmp / 'counter', self.tmp / 'table'
-        command = helper + '\nconntrack_count ' + shlex.quote(str(counter)) + ' ' + shlex.quote(str(table))
-        for shell in self.each_shell():
-            for scalar, rows, expected in [('163\n', None, '163'), ('0\n', 'x\ny\n', '0'),
-                                           (None, 'x\ny\n', '2'), ('bad\n', 'x\n', '1'),
-                                           (None, '', '0'), (None, None, 'null')]:
-                for path, content in [(counter, scalar), (table, rows)]:
-                    if content is None:
-                        path.unlink(missing_ok=True)
-                    else:
-                        path.write_text(content)
-                result = self.sh(shell, command)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout.strip(), expected)
+    def test_conntrack_prefers_scalar_and_uses_existing_table_format_when_needed(self):
+        scalar=self.root/'proc/sys/net/netfilter/nf_conntrack_count'
+        table=self.root/'proc/net/nf_conntrack'
+        for counter,rows,expected in [('163',None,163),('0','x\ny\n',0),(None,'x\ny\n',2),('bad','x\n',1),(None,'',0),(None,None,None)]:
+            for path,value in [(scalar,counter),(table,rows)]:
+                if value is None:path.unlink(missing_ok=True)
+                else:path.parent.mkdir(parents=True,exist_ok=True);path.write_text(value)
+            self.assertEqual(self.snap.run()['conns'],expected)
 
-    def test_json_string_escaping_matches_original_contract(self):
-        script = INFO.read_text()
-        helpers = script[script.index("CR=$(printf '\\r')"):script.index('# ------------------------------------------------------------- temperature')]
-        values = ['', 'normal', 'A\\B"C', '中文热点 🛜', 'line1\nline2\rline3']
-        for shell in self.each_shell():
-            for value in values:
-                result = self.sh(shell, helpers + '\nqs "$CASE"', CASE=value)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                expected = (json.dumps(value.replace('\n', '').replace('\r', ''), ensure_ascii=False)
-                            if value else 'null')
-                self.assertEqual(result.stdout, expected)
+    def test_conntrack_table_is_counted_across_chunk_boundaries(self):
+        self.snap.write('proc/net/nf_conntrack','x'*4095+'\n'+'entry\n'*10000)
+        self.assertEqual(self.snap.run()['conns'],10001)
 
-
-if __name__ == '__main__':
-    import unittest
-    unittest.main()
+    def test_json_strings_quotes_unicode_and_newlines(self):
+        for value in ['normal','A\\B"C','中文热点 🛜','line1\nline2\rline3']:
+            # Read-only system-file strings cannot corrupt the surrounding JSON.
+            self.snap.write('tmp/sysinfo/model',value)
+            self.assertEqual(self.snap.run()['model'],value.replace('\n','').replace('\r',''))

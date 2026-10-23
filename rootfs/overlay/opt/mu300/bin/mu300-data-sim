@@ -1,10 +1,6 @@
 #!/bin/sh
 # MU300 netifd adapter. No tty opens, RIL handshake changes or USB operations.
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
-# The U30 has one active RF stack; a V50-style SPSWDATA-only switch is unsafe.
-if [ "$(mu300-device 2>/dev/null)" = u30air ]; then
-    exec /opt/mu300/bin/mu300-data-sim-u30 "$@"
-fi
 . "${MU300_SIM_ENV_LIB:-/opt/mu300/bin/mu300-sim-env}"
 cfg() { uci -q get "unisoc_modem.main.$1" 2>/dev/null || true; }
 wan=$(cfg data_interface); wan=${wan:-wan}
@@ -92,6 +88,9 @@ apply)
     case "$permission:$target" in
         0:*) ;;
         1:1)
+            [ "$(mu300-device 2>/dev/null)" != u30air ] || {
+                echo 'Enable the target SIM radio before switching' >&2; exit 1;
+            }
             at_slot "$target" 'AT+CPIN?' | grep -q '^+CPIN: READY' || { echo sim_not_ready >&2; exit 1; }
             "${MU300_RADIO_CONTROL:-/opt/mu300/bin/mu300-sim-radio}" --switch-enable 1 1 || exit 1 ;;
         *) echo 'Enable the target SIM radio before switching' >&2; exit 1 ;;

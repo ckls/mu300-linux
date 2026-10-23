@@ -13,6 +13,43 @@ from pathlib import Path
 
 TOP = Path(__file__).resolve().parents[1]
 BIN = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin'
+GIT_CHECKOUT = bool(shutil.which('git')) and subprocess.run(
+    ['git', '-C', str(TOP), 'rev-parse', '--git-dir'], capture_output=True).returncode == 0
+UCODE_STUBS = TOP / 'tests/ucode-stubs'
+UCODE_MODULES = TOP / 'openwrt/luci-app-mu300/root/usr/share/ucode'
+UCODE_BASE_MODULES = TOP / 'rootfs/overlay/usr/share/ucode'
+
+
+def ucode_paths():
+    return ['-L', f'{UCODE_STUBS}/*.uc', '-L', f'{UCODE_MODULES}/*.uc',
+            '-L', f'{UCODE_BASE_MODULES}/*.uc']
+
+
+def ucode():
+    """Use an explicitly selected interpreter, or the installed native one."""
+    import shlex
+    cmd = shlex.split(os.environ.get('MU300_TEST_UCODE', '')) or ([shutil.which('ucode')] if shutil.which('ucode') else [])
+    if not cmd:
+        return None
+    try:
+        if subprocess.run(cmd + ['-e', 'print(1)'], capture_output=True, timeout=10).returncode == 0:
+            return cmd
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def is_ucode(path):
+    try:
+        with open(path, 'rb') as f:
+            return f.readline().startswith(b'#!/usr/bin/ucode')
+    except OSError:
+        return False
+
+
+def ucode_argv(path):
+    cmd = ucode()
+    return cmd + ucode_paths() + [str(path)] if cmd else None
 
 
 def _works(argv):
@@ -82,4 +119,9 @@ class ShellTest(unittest.TestCase):
     def each_shell(self):
         for s in self.shells:
             with self.subTest(shell=' '.join(s)):
-                yield s
+                try:
+                    yield s
+                except GeneratorExit:
+                    # The caller's skip/failure remains the test outcome; closing
+                    # the iterator must not produce a second subtest error.
+                    return

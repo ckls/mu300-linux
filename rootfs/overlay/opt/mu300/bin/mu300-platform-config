@@ -22,7 +22,7 @@ if [ "$previous" = "$device" ]; then
     # the selected data SIM, APNs and custom adapter mappings stay untouched.
     case $device in
         f50) version=f50_dual_version ;;
-        u30air) version=u30_native_version ;;
+        u30air) version=u30_dual_version ;;
         *) exit 0 ;;
     esac
     [ "$(uci -q get "unisoc_modem.main.$version")" != 1 ] || exit 0
@@ -42,7 +42,7 @@ fi
     elif [ "$slots" = 2 ]; then
         printf "set unisoc_modem.main.sim_slots='2'\n"
     fi
-    if [ "$device" = u30air ]; then printf "set unisoc_modem.main.u30_native_version='1'\n"; fi
+    if [ "$device" = u30air ]; then printf "set unisoc_modem.main.u30_dual_version='1'\n"; fi
     if [ "$device" = f50 ]; then printf "set unisoc_modem.main.f50_dual_version='1'\n"; fi
     printf "set unisoc_modem.main.platform_defaults='%s'\n" "$device"
     printf 'commit unisoc_modem\n'

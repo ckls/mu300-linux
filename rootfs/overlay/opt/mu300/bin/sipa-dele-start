@@ -46,16 +46,25 @@ grep -q '^sipa_dele ' /proc/modules && { log "already loaded"; exit 0; }
 modem_up() {
     dmesg | grep -qE 'sprd-sbuf: channel 5-|sbuf ready for pmic wdt init' || return 1
     [ -c /dev/stty_nr1 ] || return 1
-    mu300-at -t 8 'AT+CGATT?' 2>/dev/null | grep -q '+CGATT: *1'
+    # The channel owner must be ready; this probe never opens a raw tty.
+    MU300_AT_DAEMON_ONLY=1 mu300-at -t 8 'AT+CGATT?' 2>/dev/null | grep -q '+CGATT: *1'
 }
 
-n=0
-while [ "$n" -lt "$WAIT" ]; do
+uptime_s() { local value=; read -r value _ < /proc/uptime; printf '%s\n' "${value%%.*}"; }
+start=$(uptime_s)
+while [ "$(( $(uptime_s)-start ))" -lt "$WAIT" ]; do
     if modem_up; then
-        log "modem is up after ${n}s"
-        insmod "$KO" 2>/dev/null && log "loaded sipa-dele" || log "FAILED sipa-dele"
+        log "modem is up after $(( $(uptime_s)-start ))s"
+        if ! insmod "$KO"; then
+            log "FAILED sipa-dele"
+            exit 1
+        fi
+        log "loaded sipa-dele"
         # Both halves of the handshake are pr_info, so this says immediately whether it took.
-        sleep 3
+        for probe in $(seq 1 30); do
+            dmesg | grep -q 'channel 5-120 send open msg' && break
+            sleep 0.1
+        done
         if dmesg | grep -q 'channel 5-120 send open msg'; then
             log "channel open sent; handshake: $(dmesg | grep -c sipa_dele) sipa_dele messages so far"
         else
@@ -63,8 +72,7 @@ while [ "$n" -lt "$WAIT" ]; do
         fi
         exit 0
     fi
-    n=$((n + 2))
-    sleep 2
+    sleep 0.5
 done
 
 log "packet domain not ready after ${WAIT}s; refusing unsafe delegate load"

@@ -11,7 +11,7 @@ class PlatformConfig(ShellTest):
 if [ "$2" = get ]; then
  case "$3" in
  unisoc_modem.main) echo core ;;
- *.u30_native_version) echo "${TEST_NATIVE_VERSION:-1}" ;;
+ *.u30_dual_version) echo "${TEST_NATIVE_VERSION:-1}" ;;
  *.f50_dual_version) echo "${TEST_F50_VERSION:-1}" ;;
  *.platform_defaults) echo "${TEST_DEFAULTS:-}" ;;
  *.data_sim) echo "${TEST_DATA_SIM-0}" ;;
@@ -104,7 +104,7 @@ elif [ "$2" = set ] || [ "$2" = commit ]; then echo "$*" >> "$STUBLOG/direct"; f
 
     def test_at_owners_start_after_platform_defaults(self):
         source=(TOP/'openwrt/overlay/etc/init.d/mu300-atd').read_text()
-        self.assertLess(source.index('/mu300-platform-config'),source.index('procd_open_instance atd'))
+        self.assertLess(source.index('/mu300-platform-config'),source.index('modemd_single_layout'))
         for file in ['tools/build-openwrt-tf-magisk.sh','tools/make-release.sh','openwrt/build-rootfs.sh']:
             self.assertIn('mu300-platform-config',(TOP/file).read_text())
 

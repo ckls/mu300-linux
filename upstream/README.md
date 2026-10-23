@@ -218,6 +218,14 @@ Fixes needed on top of the port:
   provider is built read-only.
 - cpufreq: vendor `sprd_sip_svc` + `sprd-cpufreq-v2`; ATF does the DVFS, the kernel asks through SIP SMC calls
   (3 policies: 4 little / 3 mid / 1 big, schedutil). PSCI cpuidle (WFI, core sleep, cluster power-down).
+  `modules/ums9620_lpintc` adds enabled GIC SPIs to the always-on cluster wake
+  controller; it restores only its additions across suspend/resume and removes
+  them on unload. Adapted from [liuwang97's PR #373](https://github.com/dikeckaan/mu300-linux/pull/373),
+  using its U30 Air firmware evidence and the local UMS9620 clock gates. Built
+  for 6.18.54 and 7.2.8. USB cluster-idle wake was tested locally on a U30 Air
+  running 7.2.8; system suspend remains untested (disabled in that device's
+  running kernel). See the [live report](../docs/U30AIR-LPINTC-LIVE-20261023.zh-CN.md).
+  This does not change the explicitly requested `mu300-lowlatency` CPU0 policy.
   Idle temperature dropped from ~54 C to ~48 C.
 - The stock DT has trip points only on the vendor virtual zone, so `/opt/mu300/bin/thermal-guard` caps cpufreq
   above 85 C and powers off above 105 C on kernels without SoC trip points.

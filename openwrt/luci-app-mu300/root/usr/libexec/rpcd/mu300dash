@@ -7,11 +7,9 @@
 # The reply is one JSON line on stdout.
 #
 # Methods:
-#   status [refresh]  system snapshot (mu300-dash-info, fast, no AT) + the cellular
-#                     cache (mu300-dash-cell) with its age. A stale cache triggers a
-#                     background refresh (setsid) - the call itself NEVER waits for AT:
-#                     LuCI's /admin/ubus endpoint kills a call after 30 s, and an AT
-#                     round inside a page request starves the dial watchdog (V50 lesson).
+#   status / cells  compatibility clients of mu300status; stale cellular caches
+#                   request an asynchronous round from mu300.modem.
+#   signal          a newly completed native round, with a bounded response.
 #   act op [arg]      mu300-dash-act; slow ops run detached via setsid and return
 #                     immediately ("started":1), fast ones run inline.
 #   at cmd            one raw AT command through mu300-at, with the same guards the
@@ -56,13 +54,7 @@ AT=${MU300_AT:-/usr/libexec/unisoc-modem/at}
 DIR=${MU300_DASH_DIR:-/tmp/unisoc-modem}
 SMS_JOB=$DIR/sms-job
 SMS_JOB_T=110
-CELL=$DIR/cell.json
-SIGF=$DIR/sig.json
-COLLECT_LCK=$DIR/collect.lck
-FAST_LCK=$DIR/fast.lck
 HIST=$DIR/at-history
-TTL=${MU300_DASH_TTL:-5}          # full tier: neighbours/QoS/operator
-TTL_FAST=${MU300_DASH_TTL_FAST:-1} # serving tier: kick whenever older than 1 s (a fast round is ~300 ms)
 MU300_AT_LOCK_WAIT=12
 export MU300_AT_LOCK_WAIT
 
@@ -73,79 +65,20 @@ inp() {  # inp JSONPATH [default] -> param value
 }
 esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\r'; }
 now() { date +%s; }
-collecting() {
-    _p=$(cat "$COLLECT_LCK/pid" 2>/dev/null)
-    [ -n "$_p" ] && [ -d "/proc/$_p" ] &&
-        tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null | grep -q '/unisoc-modem/cell'
-}
-fast_busy() {
-    _p=$(cat "$FAST_LCK/pid" 2>/dev/null)
-    [ -n "$_p" ] && [ -d "/proc/$_p" ] &&
-        tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null | grep -q '/unisoc-modem/cell'
-}
-age_of() { [ -s "$1" ] && echo $(( $(now) - $(date -r "$1" +%s 2>/dev/null || echo 0) )) || echo -1; }
-
+# Compatibility clients use the same native RPC implementations as LuCI.
 m_status() {
-    local info cage sage busy=0 fbusy=0
-    if [ "${1:-}" = cells ]; then info=null
-    else info=$("$DASH/dashboard-info" 2>/dev/null); fi
-    [ -n "$info" ] || info='{"error":"dashboard-info failed"}'
-    cage=$(age_of "$CELL"); sage=$(age_of "$SIGF")
-    # two refresh tiers, both detached: the fast one keeps the serving-cell data
-    # within ~3 s of reality, the full one refreshes neighbours/QoS/operator.
-    # a full round in flight also writes the fast cache, so it counts for both.
-    # During a lock apply (SFUN restart) do not kick anything: the modem answers
-    # garbage mid-restart and the collectors would only burn the AT channel.
-    if [ -d /run/unisoc-modem-lock-apply ] || [ -d /run/unisoc-data-sim-switch ]; then busy=1; fbusy=1; fi
-    if collecting; then busy=1; fbusy=1; fi
-    fast_busy && fbusy=1
-    # A full round also refreshes sig.json. Prefer it when both tiers are stale;
-    # starting full and fast together doubles the AT burst for no benefit.
-    if { [ "$cage" -lt 0 ] || [ "$cage" -ge "$TTL" ]; } && [ "$busy" = 0 ]; then
-        setsid "$DASH/cell" >/dev/null 2>&1 &
-        busy=1; fbusy=1
-    elif { [ "$sage" -lt 0 ] || [ "$sage" -ge "$TTL_FAST" ]; } && [ "$fbusy" = 0 ]; then
-        setsid "$DASH/cell" fast >/dev/null 2>&1 &
-        fbusy=1
-    fi
-    printf '{"info":%s,"cell":%s,"sig":%s,"cell_age":%d,"sig_age":%d,"refreshing":%d}\n' \
-        "$info" \
-        "$([ -s "$CELL" ] && cat "$CELL" || echo null)" \
-        "$([ -s "$SIGF" ] && cat "$SIGF" || echo null)" \
-        "$cage" "$sage" "$busy"
+    local method=status
+    [ "${1:-}" != cells ] || method=cells
+    ubus -S -t 20 call mu300status "$method" "{\"slot\":\"${MU300_SIM_SLOT:-0}\"}" || {
+        printf '{"error":"Unable to read dashboard status"}\n'
+        return 1
+    }
 }
-
-# Live serving-cell snapshot for views where stale radio readings are actively
-# misleading (notably the lock page hero). This intentionally uses an isolated
-# temporary directory and returns the just-completed AT round, never cell.json
-# or sig.json from an earlier request. The bounded nr6/nr7 pool keeps it off
-# nr1 while limiting the number of concurrent modem collectors.
 m_signal() {
-    # During a lock apply the protocol stack is restarting: live AT reads in
-    # that window return garbage or wedge, and rpcd died with a userspace
-    # segfault (sessions wiped -> LuCI login loop) on at least one live
-    # read's output. Serve the last snapshot until the apply finishes.
-    if [ -d /run/unisoc-modem-lock-apply ] || [ -d /run/unisoc-data-sim-switch ]; then
-        if [ -s "$SIGF" ]; then
-            cat "$SIGF"
-        else
-            printf '{"error":"正在应用网络锁定，暂无实时信号"}\n'
-        fi
-        return
-    fi
-    local live="$DIR/live.$$"
-    mkdir -p "$live" 2>/dev/null
-    # The output is deliberately uncached, but the modem channel is not
-    # unbounded parallel work. The collector claims one of the verified
-    # slot-0 nr6/nr7 channels and drops excess overlap immediately.
-    MU300_DASH_DIR="$live" MU300_DASH_LOCK_DIR="$DIR" \
-        "$DASH/cell" fast >/dev/null 2>&1
-    if [ -s "$live/sig.json" ]; then
-        cat "$live/sig.json"
-    else
+    ubus -S -t 25 call mu300.modem signal "{\"slot\":\"${MU300_SIM_SLOT:-0}\"}" || {
         printf '{"error":"live signal read failed"}\n'
-    fi
-    rm -rf "$live"
+        return 1
+    }
 }
 
 m_act() {
@@ -484,6 +417,8 @@ do_list() {
 	"traffic_get": { "slot": "String" },
 	"traffic_set": { "payload": "String", "slot": "String" },
 	"traffic_clear": { "confirm": false, "slot": "String" },
+	"ttl_get": { },
+	"ttl_set": { "value": "String" },
 	"usb_get": { },
 	"usb_set": { "kind": "String", "value": "String", "scope": "String", "auto": "String" },
 	"apn_get": { },
@@ -522,6 +457,8 @@ call)
             card=$(uci -q get unisoc_modem.main.data_sim); [ "$card" = 1 ] || card=0
             printf '{"ok":1,"slots":%s,"saved_sim":%s}\n' "$slots" "$card"
             ;;
+        ttl_get) "$DASH/ttl" get ;;
+        ttl_set) "$DASH/ttl" set "$(inp '@.value')" ;;
         apn_get) "$DASH/apn" get ;;
         apn_set)
             case $(inp '@.action') in

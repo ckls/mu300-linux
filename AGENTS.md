@@ -14,6 +14,15 @@
   differences in the model profiles, and do not call an offline test a successful
   hardware validation.
 
+# Backport architecture
+
+- Fully replace a migrated operation or keep its original implementation until
+  the rewrite is complete. Do not add availability/version probes that silently
+  select an older backend, RPC or algorithm after the new one fails.
+- Keep platform/model choices explicit. Validate required dependencies and
+  report failures directly; retain safety checks and recovery within the chosen
+  implementation.
+
 # Local builds and release packaging
 
 - Read `docs/LOCAL-BUILD.zh-CN.md` before a local build or release. Use the

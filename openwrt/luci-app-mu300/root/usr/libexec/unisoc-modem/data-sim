@@ -20,13 +20,10 @@ validate_apply() {
                 [ "$(uci -q get unisoc_modem.main.sim_slots)" = 2 ] || { echo dual_sim_unavailable >&2; return 1; };;
             esac
             return 0;;
-        u30-hot-[01]|u30-default-[01])
-            [ "$(mu300-device 2>/dev/null)" = u30air ] || { echo dual_sim_unavailable >&2; return 1; } ;;
         *) echo invalid_sim >&2; return 1 ;;
     esac
     [ "$(uci -q get unisoc_modem.main.sim_slots)" = 2 ] && [ -x "$adapter" ] || { echo dual_sim_unavailable >&2; return 1; }
 }
-[ "$(mu300-device 2>/dev/null)" != u30air ] || MU300_JOB_TIMEOUT=360
 . "$LIB/lock-jobs.sh"
 case ${1:-} in
 get) [ -x "$adapter" ] && "$adapter" get || printf '{"ok":0,"error":"dual_sim_unavailable"}\n' ;;

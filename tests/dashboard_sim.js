@@ -42,7 +42,7 @@ const tick=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
     }
     {
         common.selectViewedSlot('0');
-        const state={ok:1,native:true,hot:0,ready:false,saved_sim:0,actual_sim:0,data_connected:true};
+        const state={ok:1,ready:false,saved_sim:0,actual_sim:0,data_connected:true};
         const requests=[];
         const M={injectCss(){},localizeMenu(){},translate:s=>s,
             selectViewedSlot:common.selectViewedSlot,
@@ -51,9 +51,7 @@ const tick=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
             if(o.method==='data_sim_get')return Promise.resolve({...state});
             if(o.method==='data_sim_set') {
                 requests.push(target);
-                if(target.startsWith('u30-hot-'))state.hot=Number(target.slice(-1));
-                else if(target.startsWith('u30-default-'))state.saved_sim=Number(target.slice(-1));
-                else {state.actual_sim=Number(target);state.saved_sim=Number(target);}
+                state.actual_sim=Number(target);state.saved_sim=Number(target);
                 return Promise.resolve({ok:1,id:'abcdefghij'});
             }
             return Promise.resolve({id:'abcdefghij',state:'done',ok:1});
@@ -62,21 +60,15 @@ const tick=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
             {extend:o=>o},rpc,{add(){},remove(){}},M,{createElement:element},{attach:()=>({refresh:()=>Promise.resolve(),dispose(){}})});
         const root=view.render([{slots:2},{...state}]);
         function all(n,tag){return (n.tag===tag?[n]:[]).concat(...n.children.map(c=>all(c,tag)));}
-        const [switchButton,saveButton]=all(root,'button');
-        const select=find(root,'select'), hot=find(root,'input');
-        assert(switchButton.disabled,'cold SIM1 boot must not offer an unprepared live switch');
-        assert(!select.disabled,'next-boot selection must remain available');
-        select.value='1';saveButton.onclick();await tick();
-        assert.deepEqual(requests,['u30-default-1']);
-        assert.equal(state.actual_sim,0,'saving boot preference must not change current radio');
-        assert.equal(common.selectedSlot(),'0','configuration does not change viewed slot');
-        hot.checked=true;hot.onchange();await tick();
-        assert.equal(requests[1],'u30-hot-1');
-        assert(switchButton.disabled,'enabling policy alone is not broker initialization');
+        const buttons=all(root,'button');
+        assert.equal(buttons.length,1,'U30 has no separate hot-switch policy controls');
+        const switchButton=buttons[0], select=find(root,'select');
+        assert(switchButton.disabled,'uninitialized dual stacks require cold boot');
+        assert(!select.disabled);
         state.ready=true;await view.refresh();
         assert(!switchButton.disabled,'ready state must enable the live control without a page reload');
         select.value='1';switchButton.onclick();await tick();
-        assert.equal(requests[2],'1');
+        assert.deepEqual(requests,['1']);
         assert.equal(common.selectedSlot(),'1');
         view.unload();
     }
@@ -106,5 +98,5 @@ const tick=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
         physical.ready=false;await view.refresh();assert(button.disabled);
         view.unload();
     }
-    console.log('SIM UI: scoped RPC, U30 controls and four V50 hardware variants pass');
+    console.log('SIM UI: scoped RPC, shared U30 controls and four V50 hardware variants pass');
 })().catch(e=>{console.error(e);process.exitCode=1;});

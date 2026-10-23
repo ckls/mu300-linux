@@ -7,7 +7,8 @@
 export PATH=/bin:/sbin HOME=/root TERM=vt100
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
-echo 7 > /proc/sys/kernel/printk
+# Errors stay on UART; informational records stay in dmesg.
+echo 4 > /proc/sys/kernel/printk
 # the custom kernel has devtmpfs; fall back to tmpfs + mknod for safety
 if ! mount -t devtmpfs -o mode=0755 devtmpfs /dev; then
     mount -t tmpfs -o mode=0755 tmpfs /dev
@@ -19,6 +20,9 @@ if ! mount -t devtmpfs -o mode=0755 devtmpfs /dev; then
 fi
 pmsg_major=$(awk '$2=="pmsg"{print $1}' /proc/devices)
 [ -n "$pmsg_major" ] && [ ! -e /dev/pmsg0 ] && mknod /dev/pmsg0 c "$pmsg_major" 0
+
+# Start entropy initialization without blocking PID 1.
+if [ -c /dev/random ]; then head -c 1 /dev/random >/dev/null 2>&1 & fi
 
 log() {
     echo "<3>MU300-LINUX: $*" > /dev/kmsg
@@ -161,13 +165,19 @@ detect_linux_slot() {
     return 1
 }
 find_partitions() {
-    for n in $(seq 1 20); do
+    # Port the readiness-driven eMMC wait from liuwang97/boot-speed. Keep the
+    # original twenty-second bound even when this busybox lacks usleep.
+    local attempts=20 scan_every=1 fast_wait=0
+    if usleep 0 2>/dev/null; then
+        attempts=200; scan_every=10; fast_wait=1
+    fi
+    for n in $(seq 1 "$attempts"); do
         for u in /sys/class/block/mmcblk*p*/uevent; do
             grep -qx PARTNAME=misc "$u" 2>/dev/null && misc=/dev/$(basename "$(dirname "$u")")
         done
         [ -b "$misc" ] && break
-        sleep 1
-        mdev -s
+        if [ "$fast_wait" = 1 ]; then usleep 100000; else sleep 1; fi
+        [ $((n % scan_every)) != 0 ] || mdev -s
     done
     [ -b "$misc" ] || misc=
     detect_linux_slot || { bootdev=; return 1; }
@@ -282,7 +292,7 @@ setup_usb_gadget() {
     [ -z "$udc" ] && for u in /sys/class/udc/*; do [ -e "$u" ] && { udc=$(basename "$u"); break; }; done
     log "stage=udc udc=${udc:-none} available=$(ls /sys/class/udc 2>/dev/null | tr '\n' ',')"
     persist
-    sleep 1
+    # UDC discovery above is the readiness condition.
     # Never rebind the gadget from a shell running on its own ACM console: the console dies with the unbind and the
     # rebind never runs, which leaves the device with no USB at all until it is power-cycled.
     log "stage=usb-bind-start"
@@ -585,6 +595,12 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
         *) [ -z "$sd_root" ] || echo "$sd_root" > /run/mu300-root-dev ;;
     esac
     echo "$DEVICE" > /run/mu300/device
+    # Parallel page-cache warmup; retain normal procd module loading and failsafe.
+    prefetch=
+    if [ -d "$rootdir/lib/modules/$(uname -r)" ]; then
+        (cd "$rootdir/lib/modules/$(uname -r)" && exec cat -- *.ko) >/dev/null 2>&1 </dev/null &
+        prefetch=$!
+    fi
     init=/sbin/init
     [ -x /newroot/lib/systemd/systemd ] && init=/lib/systemd/systemd
     # Mainline cpufreq is now modular so an updated rootfs can read a saved
@@ -600,8 +616,11 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
     fi
     log "stage=switch-root root=$rootdir init=$init os=$(sed -n 's/^PRETTY_NAME=//p' /newroot/etc/os-release)"
     persist
-    kill $(jobs -p) 2>/dev/null
-    for p in /proc/[0-9]*; do [ "${p#/proc/}" = 1 ] || kill -9 "${p#/proc/}" 2>/dev/null; done
+    for child in $(jobs -p); do [ "$child" = "$prefetch" ] || kill "$child" 2>/dev/null; done
+    for p in /proc/[0-9]*; do
+        p=${p#/proc/}
+        [ "$p" = 1 ] || [ "$p" = "$prefetch" ] || kill -9 "$p" 2>/dev/null
+    done
     # Trial guard, only in images built with --trial-guard SECONDS (tools/flash-trial.sh experiments, never an
     # install): the timer above ends here, and a trial kernel that boots but never brings up USB (6.18 on the U30
     # Air) left a device that only failing five boots by hand brought back. So one more timer outlives

@@ -1,0 +1,9 @@
+#!/bin/sh /etc/rc.common
+# One-shot placement after procd creates the services hierarchy.
+START=95
+start() {
+    /opt/mu300/bin/mu300-service-cpus apply || {
+        logger -t mu300-service-cpus 'Failed to apply saved service CPU placement'
+        return 1
+    }
+}

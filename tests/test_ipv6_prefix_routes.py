@@ -13,10 +13,11 @@ ROWS = {
 class PrefixRoutes(ShellTest):
     def setUp(self):
         super().setUp()
-        self.lib = NDP.read_text().split('\ncase ${1:-} in', 1)[0]
+        source=NDP.read_text()
+        self.lib = 'IFACE=sipa_eth0\nIF_INET6=${MU300_IF_INET6:-/proc/net/if_inet6}\n' + source[source.index('bearer_prefixes() {'):source.index('\ncase ${1:-} in')]
         self.inet6 = self.tmp / 'if_inet6'
         self.stub('logger', ':')
-        self.stub('uci', 'echo relay')
+        self.stub('uci', 'case "$*" in *main.data_sim) echo 0;; *main.sim_slots) echo 1;; *main.sim0_device) :;; *) echo relay;; esac')
         self.stub('ra-deprecate', 'echo "ra $*" >> "$STUBLOG/calls"')
         self.stub('ip', '''echo "ip $*" >> "$STUBLOG/calls"
 case "$*" in
@@ -26,6 +27,7 @@ case "$*" in
     "-6 neigh show dev br-lan") cat "$STUBLOG/neigh" ;;
 esac
 exit 0''')
+        self.extra_ndp=dict(MU300_NDP_INTERFACE_LIB=TOP/'rootfs/overlay/opt/mu300/lib/ndp-interface.sh',MU300_NDP_SIM_ENV=TOP/'rootfs/overlay/opt/mu300/bin/mu300-sim-env')
         for name in ('wan', 'lan', 'neigh', 'calls'):
             (self.tmp / name).write_text('')
 
@@ -48,7 +50,7 @@ exit 0''')
             ROWS['b'].replace('sipa_eth0', 'br-lan') +
             '2oops 05 40 00 00 sipa_eth0\n')
         for shell in self.each_shell():
-            got = self.script(shell, NDP, '--prefix', MU300_IF_INET6=self.inet6)
+            got = self.script(shell, NDP, '--prefix', MU300_IF_INET6=self.inet6,**self.extra_ndp)
             self.assertEqual((got.returncode, got.stdout, got.stderr), (0, f'{A}\n{B}\n', ''))
 
     def test_coexisting_routes_are_both_repaired_each_round(self):
@@ -111,5 +113,5 @@ exit 0''')
         self.stub('sleep', 'echo unexpected-sleep >&2; exit 1')
         for shell in self.each_shell():
             got = self.script(shell, NDP, '--once', MU300_IF_INET6=self.inet6,
-                              MU300_RA_DEPRECATE=self.stubs / 'ra-deprecate')
+                              MU300_RA_DEPRECATE=self.stubs / 'ra-deprecate',**self.extra_ndp)
             self.assertEqual((got.returncode, got.stderr), (0, ''))

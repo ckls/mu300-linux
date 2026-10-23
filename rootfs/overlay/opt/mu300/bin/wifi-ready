@@ -1,0 +1,23 @@
+#!/usr/bin/ucode
+// One read-only readiness check; never enables a disabled radio or AP.
+import { cursor } from 'uci';
+import { connect } from 'ubus';
+let c=cursor(), bus=connect(null,2);
+if(!bus)exit(1);
+let runtime=bus.call('network.wireless','status',{});
+if(runtime==null)exit(1);
+let ready=true, configured=0;
+c.foreach('wireless','wifi-device',radio=>{
+    configured++;
+    if(radio.disabled=='1')return;
+    let r=runtime[radio['.name']];
+    if(!r?.up || r.pending || r.failed) {ready=false;return;}
+    c.foreach('wireless','wifi-iface',iface=>{
+        if(iface.device!=radio['.name'] || iface.disabled=='1')return;
+        let actual=null;
+        for(let i in r.interfaces || [])if(i.section==iface['.name'])actual=i;
+        if(!actual?.ifname) {ready=false;return;}
+        if(iface.mode=='ap' && bus.call('hostapd.'+actual.ifname,'get_status',{})?.status!='ENABLED')ready=false;
+    });
+});
+exit(ready && configured?0:1);

@@ -279,8 +279,23 @@ static int sprd_add_pcie_port(struct dw_pcie *pci, struct platform_device *pdev)
 	device_init_wakeup(dev, true);
 
 no_wakeup:
-
+#ifdef DW_PCIE_HAS_SKIP_LINK_WAIT
+	/* Marlin3 is powered later by wcn_bsp, not at initial host probe. */
+	pp->skip_link_wait = true;
+#endif
 	return dw_pcie_host_init(&pci->pp);
+}
+
+/* Only initial probe: configure/resume retain the full link-training wait. */
+static bool sprd_pcie_link_up_soon(struct dw_pcie *pci)
+{
+	int i;
+	for (i = 0; i < 5; i++) {
+		if (dw_pcie_link_up(pci))
+			return true;
+		usleep_range(10000, 11000);
+	}
+	return false;
 }
 
 static const struct of_device_id sprd_pcie_of_match[] = {
@@ -676,7 +691,7 @@ static int sprd_pcie_probe(struct platform_device *pdev)
 
 	ctrl->is_powered = 1;
 
-	if (dw_pcie_wait_for_link(pci)) {
+	if (!sprd_pcie_link_up_soon(pci)) {
 		dev_info(dev,
 			 "the EP has not been ready yet, power off the RC\n");
 		sprd_pcie_host_shutdown(pdev);

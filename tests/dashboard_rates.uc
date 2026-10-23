@@ -31,10 +31,11 @@ writefile(dir + '/rates-test-ubus.uc',
 	"  if(reply=='call-error')die('fixture RPC failure');\n" +
 	"  return json(reply);\n" +
 	" }};\n};\n");
-let source = readfile(repo + '/openwrt/luci-app-mu300/root/usr/libexec/unisoc-modem/dashboard-rates');
+let source = readfile(repo + '/openwrt/luci-app-mu300/root/usr/share/ucode/mu300/rates.uc');
 source = replace(source, "from 'ubus'", "from './rates-test-ubus.uc'");
 source = replace(source, "'/sys/class/net/'", sprintf('%J', dir + '/net/'));
-writefile(dir + '/rates.uc', source);
+writefile(dir + '/sampler.uc', source);
+writefile(dir + '/rates.uc', "import { sample } from './sampler.uc'; printf('%J\\n', sample());\n");
 function sample(wan, configured) {
 	writefile('/etc/config/unisoc_modem', "config core 'main'\n option data_interface 'customwan'\n" +
 		(configured == null ? '' : " option data_device '" + configured + "'\n"));

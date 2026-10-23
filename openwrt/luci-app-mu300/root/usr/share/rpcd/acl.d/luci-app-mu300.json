@@ -1,28 +1,77 @@
 {
- "luci-app-mu300": {
-  "description": "MU300 控制中心：状态看板、网络锁定、AT 终端与短信",
-  "read": {
-   "ubus": {
-    "mu300dash": [
-     "apn_get", "sysinfo", "status", "rates", "cells", "signal", "at_history",
-     "lock_get", "lock_status", "sms_list", "sms_show", "forward_get",
-     "forward_status", "traffic_get", "usb_get", "usb_net_list", "cpu_get", "cpu_voltage_get", "sim_get", "data_sim_get", "data_sim_status", "sim_radio_get", "sim_radio_status", "v50_sim_get"
-    ],
-    "mu300-charge": [ "get" ]
-   },
-   "uci": {
-    "unisoc_modem": [ "*" ]
-   }
-  },
-  "write": {
-   "ubus": {
-    "uci": [ "commit" ],
-    "mu300dash": [ "*" ],
-    "mu300-charge": [ "configure", "full_once", "pause", "resume" ]
-   },
-   "uci": {
-    "unisoc_modem": [ "*" ]
-   }
+  "luci-app-mu300": {
+    "description": "MU300 控制中心：状态看板、网络锁定、AT 终端与短信",
+    "read": {
+      "ubus": {
+        "mu300rates": [
+          "rates"
+        ],
+        "mu300dash": [
+          "apn_get",
+          "sysinfo",
+          "status",
+          "rates",
+          "cells",
+          "signal",
+          "at_history",
+          "lock_get",
+          "lock_status",
+          "sms_list",
+          "sms_show",
+          "forward_get",
+          "forward_status",
+          "traffic_get",
+          "usb_get",
+          "usb_net_list",
+          "cpu_get",
+          "cpu_voltage_get",
+          "sim_get",
+          "data_sim_get",
+          "data_sim_status",
+          "sim_radio_get",
+          "sim_radio_status",
+          "v50_sim_get",
+          "ttl_get"
+        ],
+        "mu300-charge": [
+          "get"
+        ],
+        "mu300status": [
+          "status",
+          "cells",
+          "sysinfo",
+          "sms_head"
+        ],
+        "mu300.modem": [
+          "signal"
+        ]
+      },
+      "uci": {
+        "unisoc_modem": [
+          "*"
+        ]
+      }
+    },
+    "write": {
+      "ubus": {
+        "uci": [
+          "commit"
+        ],
+        "mu300dash": [
+          "*"
+        ],
+        "mu300-charge": [
+          "configure",
+          "full_once",
+          "pause",
+          "resume"
+        ]
+      },
+      "uci": {
+        "unisoc_modem": [
+          "*"
+        ]
+      }
+    }
   }
- }
 }

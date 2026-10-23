@@ -44,9 +44,11 @@ fi
 for f in dumps/boot_a.img dumps/misc-head.bin busybox tools/logdw/logdw; do
     [ -s "$IN/$f" ] || { echo "missing $IN/$f" >&2; exit 1; }
 done
-for f in firmware android-subset tools/bt-init/mu300-bt-init tools/keys/mu300-keys; do
+for f in firmware android-subset tools/bt-init/mu300-bt-init tools/keys/mu300-keys tools/atd-io/mu300-atd-io; do
     [ -e "$IN/$f" ] || { echo "required device input missing: $IN/$f" >&2; exit 1; }
 done
+python3 "$TOP/tools/atd-io/artifact.py" check "$IN/tools/atd-io/mu300-atd-io"
+python3 "$TOP/tools/atd-io/artifact.py" check "$IN/tools/keys/mu300-keys" "$TOP/tools/keys/mu300-keys.c"
 file "$IN/tools/keys/mu300-keys" | grep -q 'ELF 64-bit.*ARM aarch64' || {
     echo "mu300-keys must be an AArch64 executable" >&2; exit 1;
 }
@@ -109,9 +111,10 @@ MU300_GPU=0 MU300_INPUTS="$IN" MU300_MAINLINE_OUT="$UO" MU300_LUCI_PLUGIN_SRC="$
   sh "$TOP/openwrt/build-rootfs.sh" "$(basename "$ROOTFS")"
 for f in ./lib/netifd/proto/mu300cell.sh ./lib/netifd/proto/mu300cell-v6.sh \
     ./sbin/block ./lib/libblkid-tiny.so ./etc/init.d/fstab ./etc/mu300/block-mount.build-id \
+    ./opt/mu300/bin/mu300-atd-io ./opt/mu300/bin/mu300-modemd ./usr/share/ucode/mu300/registration.uc ./usr/share/ucode/mu300/cellparse.uc ./opt/mu300/lib/modemd-service.sh ./opt/mu300/lib/sms-events.sh ./opt/mu300/bin/mu300-sysd ./etc/rc.d/S95mu300-sysd \
     ./opt/mu300/bin/mu300-keys ./opt/mu300/bin/mu300-bt-init ./opt/mu300/bin/mu300-atd ./opt/mu300/bin/mu300-at ./opt/mu300/bin/mobile-data \
     ./opt/mu300/bin/u30air-led-status ./etc/hotplug.d/power_supply/70-mu300-led \
-    ./opt/mu300/bin/mu300-data-sim-u30 ./opt/mu300/bin/mu300-sim-u30 ./opt/mu300/bin/mu300-sim2-start ./opt/mu300/bin/mu300-sim2-warmup ./opt/mu300/lib/sim-config.sh \
+    ./opt/mu300/bin/mu300-data-sim-u30 ./opt/mu300/bin/mu300-sim-u30 \
     ./opt/mu300/bin/mu300-v50-sim ./opt/mu300/lib/v50-card.sh ./opt/mu300/lib/network-led.sh \
     ./opt/mu300/bin/mu300-charge-mode ./opt/mu300/bin/mu300-modem-coldboot ./etc/rc.d/S09mu300-charge-mode \
     ./opt/mu300/bin/mu300-user-packages ./etc/init.d/mu300-user-packages ./etc/mu300/image-packages \
@@ -119,12 +122,12 @@ for f in ./lib/netifd/proto/mu300cell.sh ./lib/netifd/proto/mu300cell-v6.sh \
     ./lib/netifd/hostapd-unisoc.sh ./usr/share/ucode/wifi/unisoc-sae.uc \
     ./etc/mu300/wifi-sae.build-id \
     ./opt/mu300/bin/mu300-usb ./opt/mu300/bin/v50-led-status ./opt/mu300/bin/mu300-platform-config ./opt/mu300/bin/openwrt-board-check ./opt/mu300/bin/mu300-sim-env ./opt/mu300/bin/mu300-data-sim ./opt/mu300/bin/mu300-dual-radio ./etc/init.d/mu300-post ./etc/init.d/mu300-atd \
-    ./etc/init.d/mu300-smsd ./opt/mu300/lib/sms-pool.sh ./opt/mu300/bin/mu300-smsd ./opt/mu300/bin/mu300-sms ./etc/sysctl.d/99-mu300-console.conf \
-    ./usr/share/luci/menu.d/luci-app-mu300.json \
+    ./etc/init.d/mu300-smsd ./opt/mu300/lib/sms-pool.sh ./opt/mu300/lib/ndp-events.sh ./opt/mu300/lib/ndp-interface.sh ./opt/mu300/lib/data-events.sh ./opt/mu300/bin/mu300-smsd ./opt/mu300/bin/mu300-sms ./etc/sysctl.d/99-mu300-console.conf \
+    ./usr/share/luci/menu.d/luci-app-mu300.json ./usr/share/rpcd/ucode/mu300rates.uc ./usr/share/ucode/mu300/rates.uc \
     ./www/luci-static/resources/view/mu300/home.js \
     ./www/luci-static/resources/mu300/refresh.js \
     ./www/luci-static/resources/view/mu300/sms.css \
-    ./usr/libexec/unisoc-modem/dashboard-rates ./usr/libexec/unisoc-modem/dashboard-network.sh \
+    ./usr/libexec/unisoc-modem/dashboard-rates ./usr/libexec/unisoc-modem/dashboard-network.sh ./usr/share/ucode/mu300/dash.uc ./usr/share/rpcd/ucode/mu300status.uc ./opt/mu300/bin/mu300-service-cpus ./usr/share/ucode/mu300/service-cpus.uc ./opt/mu300/bin/wifi-ready \
     ./usr/libexec/unisoc-modem/apn ./usr/libexec/unisoc-modem/apn.uc ./usr/libexec/unisoc-modem/apn-identity ./etc/config/unisoc_apn \
     ./www/luci-static/resources/view/mu300/apn.js \
     ./usr/libexec/unisoc-modem/lock ./usr/libexec/unisoc-modem/boot-replay ./usr/libexec/unisoc-modem/sim-scope.sh \

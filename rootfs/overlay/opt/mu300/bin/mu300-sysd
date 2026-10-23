@@ -1,0 +1,648 @@
+#!/usr/bin/ucode
+// Event-driven service core from liuwang97/cpu-load ccf89bb6, adapted locally.
+// Preserve this branch's U30 double-click, LED helper, per-policy owned caps,
+// vendor-kernel policy and five-second protection/LED deadlines. No mu300-power
+// protocol, adaptive thermal delay or upstream frequency backstop is assumed.
+// --round runs one thermal round for offline tests; MU300_SYSROOT is a fake root.
+'use strict';
+
+import * as uloop from 'uloop';
+import * as socket from 'socket';
+import { readfile, writefile, open, stat, lstat, mkdir, unlink, lsdir, dup2, access, popen, fdopen, basename,
+	dirname, rmdir } from 'fs';
+
+let logmod = null;
+try { logmod = require('log'); } catch (e) { }
+
+// ------------------------------------------------------------------ small things
+function env(name, dflt) { let v = getenv(name); return (v != null && v != '') ? v : dflt; }
+function digits(s) { return type(s) == 'string' && s != '' && ltrim(s, '0123456789') == ''; }
+function integer(s) { return type(s) == 'string' && digits((substr(s, 0, 1) == '-') ? substr(s, 1) : s); }
+function num(name, dflt) { let v = env(name, ''); return digits(v) ? +v : dflt; }
+function shq(s) { return "'" + replace('' + s, "'", "'\\''") + "'"; }
+function exists(path) { return lstat(path) != null; }
+// rd PATH: its first line as the shell's `read -r` leaves it (the blanks around it gone); null when it cannot be read
+function rd(path) {
+	let s = readfile(path);
+	if (s == null)
+		return null;
+	let i = index(s, '\n');
+	return trim((i >= 0) ? substr(s, 0, i) : s, ' \t');
+}
+function mkdir_p(dir) {
+	if (dir == '' || dir == '/' || exists(dir))
+		return;
+	mkdir_p(dirname(dir));
+	mkdir(dir);
+}
+function retimer(old, ms, cb) {
+	if (old)
+		old.cancel();
+	return uloop.timer(ms, cb);
+}
+// names DIR PREFIX: the entries of DIR that start with PREFIX, in the shell's glob order
+function names(dir, prefix) {
+	let out = [];
+	for (let n in lsdir(dir) ?? [])
+		if (substr(n, 0, length(prefix)) == prefix)
+			push(out, n);
+	return sort(out);
+}
+
+const R = env('MU300_SYSROOT', '');
+const RUN = env('MU300_RUN', '/run');
+const BIN = env('MU300_BIN', '/opt/mu300/bin');
+const KEYS = env('MU300_KEYS_BIN', 'mu300-keys');
+const MODE = ARGV[0] ?? '';
+const ONCE = env('MU300_SYSD_ONCE', '') == '1';
+let parts = {};
+for (let p in split(env('MU300_SYSD_PARTS', 'keys led thermal'), /[ ,]+/))
+	parts[p] = true;
+
+// the uptime in seconds (a fraction): the clock of the LED files and of mu300-buttons' hotspot marker
+function now() {
+	let u = readfile(R + '/proc/uptime');
+	return u ? +split(u, ' ')[0] : 0;
+}
+
+// log TAG MSG: as the script it comes from logged it (logger -t TAG), into syslog; MU300_SYSD_LOG: into that file
+const LOGFILE = env('MU300_SYSD_LOG', null);
+function log(tag, msg) {
+	if (LOGFILE) {
+		let f = open(LOGFILE, 'a');
+		if (f) {
+			f.write(tag + ': ' + msg + '\n');
+			f.close();
+		}
+	}
+	else if (logmod) {
+		logmod.openlog(tag);
+		logmod.syslog(logmod.LOG_NOTICE, '%s', msg);
+	}
+	else
+		warn(tag + ': ' + msg + '\n');
+}
+
+// ------------------------------------------------------------------ processes
+// What runs is found on mu300-buttons' PATH (the stubs of the tests come first).
+let ENV = getenv();
+ENV.PATH = (ENV.PATH ?? '/usr/sbin:/usr/bin:/sbin:/bin') + ':/opt/mu300/bin:/usr/sbin:/sbin';
+function which(cmd) {
+	if (index(cmd, '/') >= 0)
+		return access(cmd, 'x') ? cmd : null;
+	for (let d in split(ENV.PATH, ':')) {
+		let p = ((d == '') ? '.' : d) + '/' + cmd;
+		if (access(p, 'x') && stat(p)?.type == 'file')
+			return p;
+	}
+	return null;
+}
+
+// Retain the normal scheduler deadlines; no added timer slack.
+function fork_exec(exe, args, envs, cb) { return uloop.process(exe,args,envs,cb); }
+
+let running = 0;   // started and not ended yet (the helper is not counted)
+let idle_check;    // set below
+// spawn ARGV [DONE] [MORE] [QUIET]: ARGV in the background, DONE(exit code) once it ended; MORE: environment on top.
+// QUIET: stdin, stdout and stderr on /dev/null, as mu300-buttons ran its background work.
+function spawn(argv, done, more, quiet) {
+	let exe = which(argv[0]) ?? argv[0], args = slice(argv, 1);
+	if (quiet) {
+		args = [ '-c', 'exec "$0" "$@" </dev/null >/dev/null 2>&1', exe, ...args ];
+		exe = '/bin/sh';
+	}
+	let p = fork_exec(exe, args, more ? { ...ENV, ...more } : ENV, (code) => {
+		running--;
+		if (done) {
+			try { done(code); }
+			catch (e) { log('mu300-sysd', argv[0] + ': ' + e); }
+		}
+		idle_check();
+	});
+	if (!p) {
+		log('mu300-sysd', 'could not start ' + argv[0]);
+		if (done)
+			uloop.timer(0, () => done(-1));
+		return null;
+	}
+	running++;
+	return p;
+}
+
+// --- deadlines (mu300-buttons' and mu300-power's rule): a process tree killed
+function proc_table() {   // { PID: PPID } of every process
+	let t = {};
+	for (let d in lsdir('/proc') ?? []) {
+		let c = ord(d);
+		if (c < 48 || c > 57)
+			continue;
+		let s = readfile('/proc/' + d + '/stat');
+		if (s == null)
+			continue;
+		t[d] = split(substr(s, rindex(s, ')') + 2), ' ')[1];
+	}
+	return t;
+}
+// tree_kill PID: the process and everything it started. The tree is stopped until a look finds nothing new (a child
+// forked during one look is caught by the next), then every process any look saw is killed
+function tree_kill(pid) {
+	let prev = null, seen = {};
+	for (let n = 1; ; n++) {
+		let pp = proc_table(), s = {}, more = true;
+		s['' + pid] = true;
+		while (more) {
+			more = false;
+			for (let p in pp)
+				if (!s[p] && s[pp[p]]) {
+					s[p] = true;
+					more = true;
+				}
+		}
+		let all = sort(keys(s), (a, b) => +a - +b);
+		system('kill -STOP ' + join(' ', all) + ' 2>/dev/null');
+		for (let p in all)
+			seen[p] = true;
+		let key = join(' ', all);
+		if (key == prev || n >= 10)
+			break;
+		prev = key;
+	}
+	system('kill -KILL ' + join(' ', keys(seen)) + ' 2>/dev/null');
+}
+// deadline SECONDS P: past SECONDS the process P and all it started are killed; the timer to cancel when it ends
+function deadline(secs, p) {
+	return p ? uloop.timer(secs * 1000, () => tree_kill(p.pid())) : null;
+}
+// chain ARGV: one after another, each within a minute (a round's power-off before its alarm, as the guard ran them)
+let chain_q = [], chaining = false;
+function chain_next() {
+	let a = shift(chain_q);
+	if (!a) {
+		chaining = false;
+		idle_check();
+		return;
+	}
+	chaining = true;
+	let t = null;
+	t = deadline(60, spawn(a, () => { if (t) t.cancel(); chain_next(); }));
+}
+function chain(argv) {
+	push(chain_q, argv);
+	if (!chaining)
+		chain_next();
+}
+
+// ------------------------------------------------------------------ the keys (mu300-buttons)
+const KEY_POWER = 116;
+const KEY_WIFI = 138;   // "Wifi Switch Key" in the U30 Air's device tree (KEY_HELP's code, as its Android maps it)
+const DEADLINE = num('MU300_BUTTONS_DEADLINE', 150);   // a toggle in the background (the LED sync after wifi up: 120 s)
+const PROBE_DEADLINE = num('MU300_BUTTONS_PROBE_DEADLINE', 5);
+function is_openwrt() { return exists(R + '/etc/openwrt_release'); }
+
+// probe ARGV CB: ARGV within PROBE_DEADLINE, CB(true) when it said yes (the direction of a hold is decided before the
+// wake: it must not wait long)
+function probe(argv, cb) {
+	let t = null;
+	t = deadline(PROBE_DEADLINE, spawn(argv, (code) => {
+		if (t)
+			t.cancel();
+		cb(code == 0);
+	}, null, true));
+}
+function hotspot_is_up(cb) {
+	if (is_openwrt())
+		probe([ 'ubus', '-t', '5', 'call', 'hostapd.wlan0', 'get_status' ], cb);
+	else
+		probe([ 'systemctl', 'is-active', '--quiet', 'mu300-hotspot' ], cb);
+}
+
+let led_arm;
+let presses = [], pressing = false, wifi_last = null, key_model = null;
+let press_next;
+function button_done(argv, cb) {
+    let timer = null;
+    let p = spawn(argv, () => { if (timer) timer.cancel(); cb(); });
+    timer = deadline(DEADLINE, p);
+}
+function button_model() {
+    if (key_model != null) return key_model;
+    let exe = which('mu300-device');
+    let p = exe ? popen(shq(exe) + ' 2>/dev/null', 'r') : null;
+    key_model = p ? trim(p.read('all') ?? '') : '';
+    p?.close();
+    return key_model;
+}
+function band_toggle() {
+    button_done(['/bin/sh','-c','mu300-wifi-band toggle | logger -t mu300-buttons 2>/dev/null'], () => press_next());
+}
+function press_rest(code, kind) {
+    if (code == KEY_POWER) {
+        wifi_last = null;
+        if (kind == 'long') {
+            log('mu300-buttons', 'power button held: shutting down');
+            button_done(is_openwrt() ? ['poweroff'] : ['systemctl','poweroff'], () => press_next());
+        } else press_next();
+        return;
+    }
+    if (kind == 'long') {
+        wifi_last = null;
+        hotspot_is_up((up) => {
+            let cmd = is_openwrt() ? (up ? 'wifi down; mu300-led wifi off' : 'wifi up') :
+                (up ? 'systemctl stop mu300-hotspot' : 'systemctl start mu300-hotspot');
+            button_done(['/bin/sh','-c',cmd], () => press_next());
+        });
+        return;
+    }
+    if (button_model() != 'u30air') { band_toggle(); return; }
+    let stamp = rd(R + '/proc/uptime'), fields = stamp ? split(split(stamp, ' ')[0], '.') : [];
+    if (length(fields) != 2 || !digits(fields[0]) || !digits(fields[1])) {
+        wifi_last = null; press_next(); return;
+    }
+    let tick = +fields[0] * 100 + +fields[1];
+    if (wifi_last != null && tick >= wifi_last && tick - wifi_last <= 50) {
+        wifi_last = null; band_toggle();
+    } else { wifi_last = tick; press_next(); }
+}
+press_next = function() {
+    let p = shift(presses);
+    if (!p) { pressing = false; idle_check(); return; }
+    pressing = true;
+    spawn(['mu300-led','wake'], () => {
+        if (parts.led) led_arm();
+        try { press_rest(p[0],p[1]); }
+        catch(e) { log('mu300-sysd','a press failed: '+e); press_next(); }
+    });
+};
+function press(code, kind) {
+    push(presses,[code,kind]);
+    if (!pressing) press_next();
+}
+
+// The existing LED helper owns policy, custom styles, battery and charger state.
+// Keep its safety tick unchanged; power-supply events can request a sooner check.
+const UEVENTS = 'power_supply,extcon';
+let led_timer = null, led_soon_timer = null, led_ticking = false, led_again = false;
+function led_look() {
+    if (led_ticking) { led_again = true; return; }
+    led_ticking = true;
+    spawn(['mu300-led','sleep','--if-due'], () => {
+        led_ticking = false;
+        if (led_again) { led_again = false; led_look(); }
+        else led_arm();
+    });
+}
+led_arm = function() {
+    led_timer = retimer(led_timer,5000, () => { led_timer = null; led_look(); });
+};
+function led_soon() {
+    led_soon_timer ??= uloop.timer(500, () => { led_soon_timer = null; led_look(); });
+}
+
+// ------------------------------------------------------------------ the helper (mu300-keys -u power_supply)
+let helper = null, helper_sock = null, helper_h = null, helper_buf = '';
+let helper_gone = false, helper_said = false;
+function on_line(line) {
+	let f = split(line, ' ');
+	if (f[0] == 'uevent') {   // the charger or the fuel gauge; "uevent overflow": some were lost
+		if (parts.led)
+			led_soon();
+	}
+	else if (f[1] == 'tick') {   // (from -t: a look, as mu300-buttons' tick)
+		if (parts.led)
+			led_look();
+	}
+	else if ((f[1] == 'short' || f[1] == 'long') && (f[0] == '116' || f[0] == '138') && parts.keys)
+		press(+f[0], f[1]);
+}
+function helper_close() {
+	if (helper_h)
+		helper_h.delete();
+	if (helper_sock)
+		helper_sock.close();
+	helper_h = null;
+	helper_sock = null;
+	helper_buf = '';
+}
+function helper_readable() {
+	let eof = false;
+	while (helper_sock) {
+		let d = helper_sock.recv(4096, socket.MSG_DONTWAIT);
+		if (d == null)
+			break;
+		if (d === '') {
+			eof = true;
+			break;
+		}
+		helper_buf += d;
+	}
+	let i;
+	while ((i = index(helper_buf, '\n')) >= 0) {
+		let line = substr(helper_buf, 0, i);
+		helper_buf = substr(helper_buf, i + 1);
+		try { on_line(line); }
+		catch (e) { log('mu300-sysd', 'a line failed: ' + e); }
+	}
+	if (eof) {
+		helper_close();
+		if (ONCE) {
+			helper_gone = true;
+			idle_check();
+		}
+	}
+}
+let helper_start;   // set below
+function helper_ended(code) {
+	helper = null;
+	helper_readable();   // what it said before it went
+	helper_close();
+	if (ONCE) {
+		helper_gone = true;
+		idle_check();
+		return;
+	}
+	// Retain the original button service's ten-second retry bound.
+	log('mu300-sysd', KEYS + ' ended (' + code + '); again in 10 s');
+	uloop.timer(10000, () => helper_start());
+}
+helper_start = function() {
+	let exe = which(KEYS);
+	let pr = exe ? socket.pair(socket.SOCK_STREAM | socket.SOCK_CLOEXEC) : null;
+	if (!pr) {
+		if (!helper_said)
+			log('mu300-sysd', exe ? 'no socket pair for ' + KEYS + ': ' + socket.error() : 'no ' + KEYS);
+		helper_said = true;
+		uloop.timer(10000, () => helper_start());
+		return;
+	}
+	helper_said = false;
+	// Its stdout is the pair's other end, read here without blocking (a pipe from popen is a stdio stream: lines
+	// that arrive together would wait in its buffer, unseen by the loop). That end is lent to this process's stdin
+	// for the fork alone, where the shell can name it (a redirection takes one digit, and the pair's own numbers are
+	// past 9 here; this process never reads its stdin), then stdin is /dev/null again: nothing else started later
+	// holds the pair open.
+	dup2(pr[1].fileno(), 0);
+	helper = fork_exec('/bin/sh', [ '-c', 'exec "$0" "$@" >&0 </dev/null', exe, '-l', '3000', '-u', UEVENTS ],
+		ENV, (code) => helper_ended(code));
+	let nul = open('/dev/null', 'r');
+	if (nul) {
+		dup2(nul.fileno(), 0);
+		nul.close();
+	}
+	else
+		fdopen(0, 'r')?.close();
+	pr[1].close();
+	helper_sock = pr[0];
+	helper_h = uloop.handle(helper_sock, () => helper_readable(), uloop.ULOOP_READ);
+	if (!helper)
+		helper_ended(-1);
+};
+
+// ------------------------------------------------------------------ thermal (thermal-guard)
+const HOT = num('MU300_THERMAL_HOT', 85000);
+const COOL = num('MU300_THERMAL_COOL', 75000);
+const CRIT = num('MU300_THERMAL_CRIT', 105000);
+const BATT_HOT = num('MU300_BATTERY_HOT', 500);
+const BATT_COOL = num('MU300_BATTERY_COOL', 450);
+const WAIT = 5;
+const TH = R + '/sys/class/thermal';
+const LED = BIN + '/mu300-led';
+const CAPS = R + '/run/mu300/thermal-caps';
+const ALARM = R + '/run/mu300/thermal-alarm';
+let legacy_throttle = true;
+
+let DEVICE = null, th_timer = null;
+function thermal_init() {
+    for (let z in names(TH,'thermal_zone')) if (exists(TH+'/'+z+'/trip_point_0_temp')) legacy_throttle=false;
+    if (exists(R+'/sys/module/mu300_thermal')) legacy_throttle=true;
+	// the label boot/init leaves when it says u30air, else mu300-device (its V50 rule is about the other labels)
+	DEVICE = rd(R + '/run/mu300/device');
+	if (DEVICE != 'u30air') {
+		let p = popen(shq(BIN + '/mu300-device') + ' 2>/dev/null', 'r');
+		DEVICE = p ? trim(p.read('all') ?? '') : '';
+		p?.close();
+	}
+}
+
+function hottest(zones) {
+	let t = 0;
+	for (let z in zones) {
+		let v = rd(TH + '/' + z + '/temp');
+		if (integer(v) && +v > t)
+			t = +v;
+	}
+	return t;
+}
+// the battery's temperature in tenths of a degree (null without one); the U30 Air only. The F50 has no battery, but
+// under mainline the PMIC's fuel gauge probes on it too and reports one, at 75 C from an unconnected NTC input. The
+// supply that is the battery is looked for again only when its reading fails.
+let battery_dir = null;
+function battery_temp() {
+	if (DEVICE != 'u30air')
+		return null;
+	let b = battery_dir ? rd(battery_dir + '/temp') : null;
+	if (b != null && b != '')
+		return b;
+	battery_dir = null;
+	for (let d in names(R + '/sys/class/power_supply', '')) {
+		d = R + '/sys/class/power_supply/' + d;
+		if (rd(d + '/type') != 'Battery')
+			continue;
+		b = rd(d + '/temp');
+		if (b != null && b != '') {
+			battery_dir = d;
+			return b;
+		}
+	}
+	return null;
+}
+
+// Recheck native cooling bindings every round, using thermal-guard's criteria.
+function inode(s) { return s.dev.major + ':' + s.dev.minor + ':' + s.inode; }
+// qualifies ZONEDIR HOTTEST CDEVS: that zone throttles the CPUs (see above)
+function qualifies(z, t, cdevs) {
+	if (rd(z + '/mode') != 'enabled')
+		return false;
+	let tp = null;
+	for (let i = 0; tp == null; i++) {
+		let tt = rd(z + '/trip_point_' + i + '_type');
+		if (tt == null)
+			break;
+		let v = (tt == 'passive') ? rd(z + '/trip_point_' + i + '_temp') : null;
+		if (digits(v) && +v <= HOT)
+			tp = v;
+	}
+	if (tp == null)
+		return false;
+	let zt = rd(z + '/temp');
+	if (!digits(zt) || +zt < t - 15000)
+		return false;
+	// cdevK is the link to a cooling device (cdevK_trip_point and cdevK_weight are files)
+	let bound = {};
+	for (let l in names(z, 'cdev')) {
+		let c = ord(l, 4), s = (c >= 48 && c <= 57) ? stat(z + '/' + l) : null;
+		if (s?.type == 'directory')
+			bound[inode(s)] = true;
+	}
+	for (let d in cdevs) {
+		let s = stat(d);
+		if (!s || !bound[inode(s)])
+			return false;
+	}
+	return true;
+}
+function native_cpu_cooling(t, listing) {
+    if (!exists(R+'/sys/module/mu300_thermal')) return false;
+    let cdevs=[];
+    for (let d in listing)
+        if (substr(d,0,14)=='cooling_device' && substr(rd(TH+'/'+d+'/type') ?? '',0,8)=='cpufreq-') push(cdevs,TH+'/'+d);
+    if (!length(cdevs)) return false;
+    for (let z in listing)
+        if (substr(z,0,12)=='thermal_zone' && rd(TH+'/'+z+'/type')=='soc-thmzone' && qualifies(TH+'/'+z,t,cdevs)) return true;
+    return false;
+}
+
+function policies() {
+	let out = [];
+	for (let p in names(R + '/sys/devices/system/cpu/cpufreq', 'policy'))
+		push(out, R + '/sys/devices/system/cpu/cpufreq/' + p);
+	return out;
+}
+function cap_file(p) { return CAPS + '/' + basename(p); }
+function cap_read(p) {
+    let v=split(rd(cap_file(p)) ?? '', '|');
+    return length(v)==2 && digits(v[0]) && digits(v[1]) ? {ceiling:+v[0],applied:+v[1]} : null;
+}
+function cap_save(p, ceiling, applied) {
+    mkdir_p(CAPS);
+    writefile(cap_file(p),ceiling+'|'+applied+'\n');
+}
+function frequencies(p) {
+    return sort(map(filter(split(trim(readfile(p+'/scaling_available_frequencies') ?? ''), /[ \n]+/), (f)=>digits(f)), (f)=>+f), (a,b)=>a-b);
+}
+function guard_lower(p) {
+    let current=rd(p+'/scaling_max_freq');
+    if (!digits(current)) return;
+    let saved=cap_read(p), ceiling=saved && +current==saved.applied ? saved.ceiling : +current, next=null;
+    for (let f in frequencies(p)) if (f < +current) next=f;
+    if (next != null && writefile(p+'/scaling_max_freq',next+'\n')) cap_save(p,ceiling,next);
+}
+function guard_release(p) {
+    let saved=cap_read(p), current=rd(p+'/scaling_max_freq');
+    if (!saved || !digits(current)) return;
+    if (+current==saved.applied && !writefile(p+'/scaling_max_freq',saved.ceiling+'\n')) return;
+    unlink(cap_file(p));
+}
+function guard_raise(p) {
+    let saved=cap_read(p), current=rd(p+'/scaling_max_freq');
+    if (!saved || !digits(current)) return;
+    if (+current!=saved.applied || +current>=saved.ceiling) { unlink(cap_file(p)); return; }
+    let next=saved.ceiling;
+    for (let f in frequencies(p)) if (f > +current && f < next) next=f;
+    if (!writefile(p+'/scaling_max_freq',next+'\n')) return;
+    if (next==saved.ceiling) unlink(cap_file(p)); else cap_save(p,saved.ceiling,next);
+}
+function mark(path, text) { mkdir_p(dirname(path)); writefile(path,text); }
+function thermal_round() {
+    let listing=names(TH,''), zones=filter(listing,(z)=>substr(z,0,12)=='thermal_zone');
+    let t=hottest(zones), b=battery_temp(), throttle=legacy_throttle, emergency=legacy_throttle;
+    if (exists(R+'/sys/module/mu300_thermal')) {
+        throttle=true; emergency=true;
+        if (native_cpu_cooling(t,listing)) { throttle=false; for (let p in policies()) guard_release(p); }
+    }
+    if (t>=CRIT && emergency) {
+        log('thermal-guard','critical temperature '+t+' mC, powering off'); chain(['poweroff']);
+    } else if (t>=HOT && throttle) {
+        for (let p in policies()) guard_lower(p);
+        log('thermal-guard','hot ('+t+' mC): lowered cpufreq limits');
+    } else if (t<=COOL && throttle) { for (let p in policies()) guard_raise(p); }
+    let bn=b==null || b=='' ? 0 : integer(b) ? +b : null, bs=b==null || b=='' ? '-' : b;
+    if (!exists(ALARM) && (t>=HOT || (bn!=null && bn>=BATT_HOT))) {
+        mark(ALARM,''); log('thermal-guard','too hot (SoC '+t+' mC, battery '+bs+' dC): LED alarm on'); chain([LED,'alarm','on']);
+    } else if (exists(ALARM) && t<=COOL && bn!=null && bn<=BATT_COOL) {
+        unlink(ALARM); log('thermal-guard','cooled down (SoC '+t+' mC, battery '+bs+' dC): LED alarm off'); chain([LED,'alarm','off']);
+    }
+    return 5; // Preserve this branch's protection cadence, including without native cooling.
+}
+function thermal_next() {
+	let gap = WAIT;
+	try { gap = thermal_round(); }
+	catch (e) { log('mu300-sysd', 'a thermal round failed: ' + e); }
+	th_timer = retimer(th_timer, gap * 1000, () => thermal_next());
+}
+
+// ------------------------------------------------------------------ main
+idle_check = function() {
+	if (MODE == '--round') {
+		if (!running && !chaining)
+			uloop.end();
+	}
+	else if (ONCE && helper_gone && !pressing && !length(presses) && !running)
+		uloop.end();
+};
+
+if (MODE == '--check') {
+	// the modules loaded (or this program would not run), the calls of this ucode, a helper that knows -u
+	if (type(socket.pair) != 'function' || type(uloop.process) != 'function' || type(uloop.signal) != 'function') {
+		warn('mu300-sysd: this ucode lacks socket.pair, uloop.process or uloop.signal\n');
+		exit(1);
+	}
+	let exe = which(KEYS);
+	let p = exe ? popen(shq(exe) + ' -? 2>&1', 'r') : null;
+	let usage = p ? (p.read('all') ?? '') : '';
+	p?.close();
+	if (index(usage, '-u SUBSYSTEM') < 0) {
+		warn('mu300-sysd: ' + (exe ? exe + ' does not know -u (an older build)' : 'no ' + KEYS) + '\n');
+		exit(1);
+	}
+	exit(0);
+}
+
+uloop.init();
+if (MODE == '--round') {
+	thermal_init();
+	warn('next look in ' + thermal_round() + ' s\n');
+	if (running || chaining)
+		uloop.run();
+	exit(0);
+}
+if (MODE != '') {
+	warn('usage: mu300-sysd [--check | --round]\n');
+	exit(2);
+}
+
+const OWN_DIR = RUN + '/mu300/sysd.lock';
+const OWN_PID = +split(readfile('/proc/self/stat'),' ')[0];
+function acquire_owner() {
+    mkdir_p(dirname(OWN_DIR));
+    for (let attempt=0; attempt<4; attempt++) {
+        if (mkdir(OWN_DIR,0700)) {
+            if (writefile(OWN_DIR+'/pid',OWN_PID+'\n')) return true;
+            rmdir(OWN_DIR); return false;
+        }
+        let pid=rd(OWN_DIR+'/pid');
+        if (pid==null || pid=='') return false;
+        if (digits(pid) && exists('/proc/'+pid)) return false;
+        unlink(OWN_DIR+'/pid');
+        if (!rmdir(OWN_DIR)) return false;
+    }
+    return false;
+}
+if (!acquire_owner()) { log('mu300-sysd','another owner or unavailable runtime directory; not starting a second helper'); exit(0); }
+uloop.signal('SIGTERM', () => uloop.end());
+uloop.signal('SIGINT', () => uloop.end());
+if (parts.keys) button_model();
+if (parts.keys || parts.led)
+	helper_start();
+if (parts.led) {
+
+	// the first look a little after the start, as mu300-buttons' first tick (the tests' runs end before it)
+	if (!ONCE)
+		led_timer = uloop.timer(5000, () => { led_timer = null; led_look(); });
+}
+if (parts.thermal) {
+	thermal_init();
+	thermal_next();
+}
+uloop.run();
+helper_close();
+if (rd(OWN_DIR+'/pid')==''+OWN_PID) { unlink(OWN_DIR+'/pid'); rmdir(OWN_DIR); }

@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-mu300
 PKG_VERSION:=1.2.0
-PKG_RELEASE:=20
+PKG_RELEASE:=23
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=MU300 Linux contributors
 PKGARCH:=all
@@ -14,7 +14,7 @@ define Package/luci-app-mu300
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
   TITLE:=Unisoc modem control center
-  DEPENDS:=+luci-base +rpcd +jsonfilter +curl +ca-bundle +openssl-util +msmtp +ucode +ucode-mod-fs +ucode-mod-ubus +ucode-mod-uci +ucode-mod-uloop
+  DEPENDS:=+luci-base +firewall4 +nftables-json +flock +rpcd +rpcd-mod-ucode +jsonfilter +curl +ca-bundle +openssl-util +msmtp +ucode +ucode-mod-fs +ucode-mod-ubus +ucode-mod-uci +ucode-mod-uloop +ucode-mod-nl80211 +ucode-mod-rtnl
 endef
 
 define Package/luci-app-mu300/description
@@ -24,6 +24,8 @@ define Package/luci-app-mu300/description
 endef
 
 define Package/luci-app-mu300/conffiles
+/etc/mu300/ttl.conf
+/etc/mu300/ttl.offload-off
 /etc/mu300/sim-radio
 /etc/config/unisoc_modem
 /etc/config/unisoc_apn
@@ -40,6 +42,7 @@ define Package/luci-app-mu300/install
 	$(INSTALL_DIR) $(1)/www
 	$(CP) ./htdocs/. $(1)/www/
 	$(CP) ./root/. $(1)/
+	chmod 0644 $(1)/usr/share/rpcd/ucode/*.uc $(1)/usr/share/ucode/mu300/*.uc
 	chmod 0755 $(1)/etc/init.d/unisoc-cpu-cores $(1)/usr/libexec/rpcd/unisoc-cpu-cores $(1)/usr/libexec/unisoc-modem/cpu-cores
 	chmod 0600 $(1)/etc/config/unisoc_apn
 	chmod 0755 $(1)/etc/uci-defaults/97-unisoc-upgrade-policy
@@ -47,6 +50,7 @@ define Package/luci-app-mu300/install
 	chmod 0755 $(1)/etc/init.d/mu300-charge $(1)/etc/hotplug.d/power_supply/75-mu300-charge $(1)/usr/libexec/rpcd/mu300-charge
 	chmod 0755 $(1)/etc/init.d/unisoc-cpu
 	chmod 0755 $(1)/etc/init.d/unisoc-modem-ui $(1)/etc/init.d/unisoc-sms-forward $(1)/etc/init.d/unisoc-traffic $(1)/etc/hotplug.d/net/90-unisoc-usb-host $(1)/etc/hotplug.d/iface/90-unisoc-usb-host $(1)/usr/libexec/rpcd/mu300dash $(1)/usr/libexec/unisoc-modem/*
+	chmod 0755 $(1)/etc/init.d/unisoc-ttl $(1)/etc/hotplug.d/iface/92-unisoc-ttl $(1)/etc/uci-defaults/98-unisoc-ttl
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/i18n
 	$(CP) ./lmo/. $(1)/usr/lib/lua/luci/i18n/
 endef
@@ -54,6 +58,7 @@ endef
 define Package/luci-app-mu300/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
+	ucode -e 'import * as dash from "mu300.dash"; import * as rates from "mu300.rates";' || exit 1
 	/usr/libexec/unisoc-modem/refresh-config
 	chmod 0600 /etc/config/unisoc_apn
 	state=$$(uci -q get unisoc_modem.main.state_dir 2>/dev/null)
@@ -69,6 +74,8 @@ define Package/luci-app-mu300/postinst
 	rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* 2>/dev/null
 	uci -q get luci.languages.tr >/dev/null || uci set luci.languages.tr='Türkçe'
 	uci commit luci
+	/etc/init.d/unisoc-ttl enable
+	/etc/init.d/unisoc-ttl start || exit 1
 	/etc/init.d/rpcd restart 2>/dev/null || true
 	/etc/init.d/unisoc-modem-ui enable 2>/dev/null || true
 	/etc/init.d/unisoc-modem-ui start 2>/dev/null || true
@@ -80,6 +87,17 @@ define Package/luci-app-mu300/postinst
 	/etc/init.d/unisoc-traffic start 2>/dev/null || true
 	/etc/init.d/unisoc-cpu enable 2>/dev/null || true
 	/etc/init.d/unisoc-cpu-cores enable 2>/dev/null || true
+}
+exit 0
+endef
+
+define Package/luci-app-mu300/prerm
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] || {
+    if [ "$$1" = remove ]; then
+        /usr/libexec/unisoc-modem/ttl-engine off || exit 1
+        /etc/init.d/unisoc-ttl disable
+    fi
 }
 exit 0
 endef

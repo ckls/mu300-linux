@@ -18,9 +18,7 @@ function read_json(path) {
     try { return json(fs.readfile(path)); } catch (e) { return null; }
 }
 function selected_slot() {
-    // Native U30 boot selection takes precedence over a next-boot UI choice.
-    let native = trim(fs.readfile(runtime + '/sim-slot') || '');
-    let value = native || cfg.get('unisoc_modem', 'main', 'data_sim') || '0';
+    let value = cfg.get('unisoc_modem', 'main', 'data_sim') || '0';
     return value == '0' ? 0 : value == '1' ? 1 : null;
 }
 function radio_busy() {
