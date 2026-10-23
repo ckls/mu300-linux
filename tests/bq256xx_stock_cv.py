@@ -80,6 +80,7 @@ static int io_error,info_error,voltage_requests;
 static int regmap_update_bits(int map,int reg,unsigned mask,unsigned value) {
  (void)map;if(io_error)return io_error;regs[reg]=(regs[reg]&~mask)|(value&mask);return 0;
 }
+static int regmap_read(int map,int reg,unsigned *value){(void)map;if(io_error)return io_error;*value=regs[reg];return 0;}
 static int power_supply_get_battery_info(int chg,struct power_supply_battery_info **p) {
  (void)chg;*p=&battery;return info_error;
 }
@@ -94,7 +95,7 @@ static struct bq256xx_chip_info chip = {
  .bq256xx_set_vindpm=unchanged,.bq256xx_set_iindpm=unchanged,.bq256xx_set_ichg=bq256xx_set_ichg_curr,
  .bq256xx_set_iprechg=unchanged,.bq256xx_set_vbatreg=set_voltage,.bq256xx_set_iterm=unchanged,
 };
-static int actual_voltage(void){return ((regs[4]&0xf8)>>3)*32000+3856000;}
+static int actual_voltage(void){unsigned code=(regs[4]&0xf8)>>3;return code==15?4352000:code*32000+3856000;}
 static void reset(void){
  memset(regs,0,sizeof(regs));regs[4]=0x5b;regs[5]=0xcf;regs[1]=0x1a;regs[0]=0x04;regs[2]=0xa1;
  battery=(struct power_supply_battery_info){3000000,4300000,180000,300000};
@@ -103,7 +104,7 @@ static void reset(void){
 int main(void){
  struct bq256xx_device b={.chip_info=&chip,.bq2560x_chg=true};
  reset();assert(!bq256xx_hw_init(&b));
- assert(b.init_data.vbatreg_max==4300000&&actual_voltage()==4272000);
+ assert(b.init_data.vbatreg_max==4304000&&actual_voltage()==4304000);
  assert(b.init_data.ichg_max==3000000&&regs[2]==0xb2);
  assert(regs[5]==0xc7); /* TERM on, timer off, TS bit and other bits retained. */
  assert((regs[4]&7)==3&&regs[1]==0x1a&&regs[0]==0x04);
@@ -117,9 +118,21 @@ int main(void){
  chip.bq256xx_max_ichg=3000000;
  reset();battery.constant_charge_current_max_ua=-EINVAL;
  assert(!bq256xx_hw_init(&b));assert(b.init_data.ichg_max==1980000&&regs[2]==0xa1);
+ /* Independent oracle: stock sqc_mp_set_cv takes mV and writes this
+  * register code. Check the full stock-supported mV range, including exact
+  * steps, chip saturation and 0xf's special value. Generic setters still floor.
+  */
+ for(int mv=3800;mv<=4700;mv++) {
+  reset();battery.constant_charge_voltage_max_uv=mv*1000;
+  assert(!bq256xx_hw_init(&b));
+  unsigned code=mv<3856?0:mv>=4624?24:(mv-3856)/32+1;
+  assert((regs[4]&0xf8)==(code<<3));
+  assert((regs[4]&7)==3);
+  assert(bq2560x_get_chrg_volt(&b)==actual_voltage());
+ }
  /* A lower-voltage cell is not raised to this board's 4.3 V setting. */
  reset();battery.constant_charge_voltage_max_uv=4100000;
- assert(!bq256xx_hw_init(&b));assert(actual_voltage()==4080000);
+ assert(!bq256xx_hw_init(&b));assert(actual_voltage()==4112000);
  reset();battery.constant_charge_voltage_max_uv=9000000;
  assert(!bq256xx_hw_init(&b));assert(actual_voltage()==4624000);
  reset();battery.constant_charge_voltage_max_uv=-EINVAL;
@@ -138,7 +151,7 @@ int main(void){
 '''
 with tempfile.TemporaryDirectory(prefix='bq-stock-cv-') as directory:
     root = Path(directory)
-    code = model + function('bq256xx_set_ichg_curr') + function('bq2560x_set_chrg_volt') + function('bq256xx_hw_init') + tests
+    code = model + function('bq256xx_set_ichg_curr') + function('bq2560x_get_chrg_volt') + function('bq2560x_set_chrg_volt') + function('bq2560x_stock_cv') + function('bq256xx_hw_init') + tests
     (root / 'test.c').write_text(code)
     subprocess.run(['cc','-Wall','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
     subprocess.run([str(root/'test')],check=True)

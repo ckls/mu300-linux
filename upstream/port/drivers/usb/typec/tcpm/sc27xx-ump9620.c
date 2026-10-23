@@ -9,6 +9,7 @@
 #include <linux/delay.h>
 #include <linux/extcon.h>
 #include <linux/interrupt.h>
+#include <linux/iopoll.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/nvmem-consumer.h>
@@ -184,14 +185,20 @@ static int sc27xx_set_current_limit(struct tcpc_dev *tcpc, u32 ma, u32 mv)
 {
 	struct sc27xx_pd *pd = to_pd(tcpc);
 	union power_supply_propval value;
+	bool pd_current = ma && READ_ONCE(pd->pd_capable);
 	int ret;
 
 	/* Only 5 V is advertised; do not request unsupported higher PD voltages. */
 	if (mv > 5000)
 		return -EINVAL;
-	value.intval = ma && pd->pd_capable ? POWER_SUPPLY_USB_TYPE_PD : POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	value.intval = pd_current ? POWER_SUPPLY_USB_TYPE_PD : POWER_SUPPLY_USB_TYPE_UNKNOWN;
 	ret = power_supply_set_property(pd->charger, POWER_SUPPLY_PROP_USB_TYPE, &value);
-	if (ret || !ma)
+	/* Without a PD contract the charger owns BC1.2/Rp arbitration. TCPM's
+	 * default USB budget is not the BC1.2 result: writing it here races the
+	 * completed DCP/CDP notification and can replace 2 A with 500 mA.
+	 * UNKNOWN above returns ownership to that existing event-driven worker.
+	 */
+	if (ret || !pd_current)
 		return ret;
 	value.intval = min(ma, 2000U) * 1000;
 	return power_supply_set_property(pd->charger, POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT, &value);
@@ -290,14 +297,27 @@ static void sc27xx_complete_tx(struct sc27xx_pd *pd, enum tcpm_transmit_status s
 static int sc27xx_receive(struct sc27xx_pd *pd)
 {
 	struct pd_message msg = {};
-	u32 word, low, high;
+	u32 word, low, high, rx_status;
 	int ret, count, i;
 
+	/* Match the vendor IRQ path: PKG_RV can precede readable FIFO data.
+	 * Do not pop stale/empty words and hand fictitious PDOs to TCPM.
+	 * Ready frames do not sleep; only an empty receive FIFO waits, bounded
+	 * by the stock 50 us / 2 ms hardware readiness interval/timeout.
+	 */
+	ret = regmap_read_poll_timeout(pd->regmap, pd->base + SC27XX_PD_STS1,
+				       rx_status, (rx_status & ~SC27XX_PD_RX_EMPTY),
+				       SC27XX_PD_POLL_RAW_STATUS, SC27XX_PD_RDY_TIMEOUT);
+	if (ret)
+		return ret;
 	ret = regmap_read(pd->regmap, pd->base + SC27XX_PD_RX_BUF, &word);
 	if (ret)
 		return ret;
+	/* The stock receive routine also samples status after popping header. */
+	ret = regmap_read(pd->regmap, pd->base + SC27XX_PD_STS1, &rx_status);
+	if (ret)
+		return ret;
 	msg.header = cpu_to_le16(word);
-	pd->pd_capable = true;
 	count = pd_header_cnt_le(msg.header);
 	for (i = 0; i < count; i++) {
 		ret = regmap_read(pd->regmap, pd->base + SC27XX_PD_RX_BUF, &low);
@@ -308,6 +328,14 @@ static int sc27xx_receive(struct sc27xx_pd *pd)
 			return ret;
 		msg.payload[i] = cpu_to_le32((low & 0xffff) | (high << 16));
 	}
+	pd->pd_capable = true;
+	if (!(le16_to_cpu(msg.header) & PD_HEADER_EXT_HDR) && count &&
+	    pd_header_type_le(msg.header) == PD_DATA_SOURCE_CAP &&
+	    (pdo_type(le32_to_cpu(msg.payload[0])) != PDO_TYPE_FIXED ||
+	     pdo_fixed_voltage(le32_to_cpu(msg.payload[0])) != 5000))
+		dev_warn_ratelimited(pd->dev,
+			"PD invalid source capabilities: header %#x, FIFO %#x, first PDO %#x\n",
+			le16_to_cpu(msg.header), rx_status, le32_to_cpu(msg.payload[0]));
 	if (!count && pd_header_type_le(msg.header) == PD_CTRL_GOOD_CRC) {
 		cc_update(pd, SC27XX_TYPEC_PD_CFG, SC27XX_TYPEC_PD_CONSTRACT,
 			SC27XX_TYPEC_PD_CONSTRACT);

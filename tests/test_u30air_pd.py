@@ -19,6 +19,60 @@ def function(text,name):
 
 @unittest.skipUnless(shutil.which('cc'),'requires C compiler')
 class PDRoles(unittest.TestCase):
+    def test_non_pd_budget_does_not_overwrite_completed_bc12(self):
+        text=DRIVER.read_text()
+        before=r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <errno.h>
+typedef unsigned int u32;
+enum { POWER_SUPPLY_USB_TYPE_UNKNOWN, POWER_SUPPLY_USB_TYPE_PD };
+enum { POWER_SUPPLY_PROP_USB_TYPE, POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT };
+union power_supply_propval {int intval;};
+struct tcpc_dev {void *pd;};
+struct sc27xx_pd {void *charger;bool pd_capable;};
+#define min(a,b) ((a)<(b)?(a):(b))
+#define READ_ONCE(x) (x)
+static int input=2000000, writes, error, type=-1;
+static struct sc27xx_pd *flip_on_property;
+static struct sc27xx_pd *to_pd(struct tcpc_dev *d){return d->pd;}
+static int power_supply_set_property(void *psy,int prop,const union power_supply_propval *v){
+ (void)psy;if(error)return error;
+ if(prop==POWER_SUPPLY_PROP_USB_TYPE){type=v->intval;if(flip_on_property)flip_on_property->pd_capable=true;}
+ else {assert(prop==POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT);input=v->intval;writes++;}
+ return 0;
+}
+'''
+        after=r'''
+int main(void){
+ struct sc27xx_pd pd={0};struct tcpc_dev tcpc={.pd=&pd};
+ /* BC1.2 completed first: a later default-USB callback cannot undo DCP. */
+ assert(!sc27xx_set_current_limit(&tcpc,500,5000));
+ assert(input==2000000&&!writes&&type==POWER_SUPPLY_USB_TYPE_UNKNOWN);
+ /* Rp is also handled by the charger; never create another non-PD owner. */
+ assert(!sc27xx_set_current_limit(&tcpc,3000,5000)&&!writes);
+ /* RX IRQ between ownership publication and IIN must not split the decision. */
+ flip_on_property=&pd;
+ assert(!sc27xx_set_current_limit(&tcpc,500,5000)&&!writes&&type==POWER_SUPPLY_USB_TYPE_UNKNOWN);
+ flip_on_property=0;
+ pd.pd_capable=true;
+ assert(!sc27xx_set_current_limit(&tcpc,2000,5000));
+ assert(input==2000000&&writes==1&&type==POWER_SUPPLY_USB_TYPE_PD);
+ assert(!sc27xx_set_current_limit(&tcpc,1500,5000)&&input==1500000&&writes==2);
+ assert(!sc27xx_set_current_limit(&tcpc,3000,5000)&&input==2000000&&writes==3);
+ assert(!sc27xx_set_current_limit(&tcpc,0,0)&&writes==3&&type==POWER_SUPPLY_USB_TYPE_UNKNOWN);
+ assert(sc27xx_set_current_limit(&tcpc,2000,9000)==-EINVAL&&writes==3);
+ error=-EIO;assert(sc27xx_set_current_limit(&tcpc,2000,5000)==-EIO&&writes==3);
+ return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as d:
+            source=Path(d)/'current.c';binary=Path(d)/'current'
+            source.write_text(before+function(text,'sc27xx_set_current_limit')+after)
+            result=subprocess.run(['cc','-Wall','-Wextra','-Werror',str(source),'-o',str(binary)],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            subprocess.run([str(binary)],check=True)
+
     def test_power_sink_can_be_usb_host_without_enabling_boost(self):
         text=DRIVER.read_text()
         before=r'''
@@ -81,21 +135,42 @@ typedef uint32_t u32;typedef uint16_t u16;typedef int irqreturn_t;
 #define GENMASK(h,l) ((~0U<<(l))&(~0U>>(31-(h))))
 #define cpu_to_le16(v) (v)
 #define cpu_to_le32(v) (v)
+#define le16_to_cpu(v) (v)
+#define le32_to_cpu(v) (v)
+#define PD_HEADER_EXT_HDR 0x8000
+#define PD_DATA_SOURCE_CAP 1
+#define PDO_TYPE_FIXED 0
+#define pdo_type(v) (((v)>>30)&3)
+#define pdo_fixed_voltage(v) ((((v)>>10)&1023)*50)
 #define pd_header_cnt_le(v) (((v)>>12)&7)
 #define pd_header_type_le(v) ((v)&31)
 #define PD_CTRL_GOOD_CRC 1
 #define TCPC_TX_SOP 0
 #define IRQ_HANDLED 1
-#define dev_warn_ratelimited(...) ((void)0)
+#define dev_warn_ratelimited(...) (++warnings)
 """
         model=r"""
 enum tcpm_transmit_status {TCPC_TX_SUCCESS,TCPC_TX_FAILED};
 struct pd_message {u16 header;u32 payload[7];};
 struct sc27xx_pd {void *regmap,*port,*dev;u32 base,typec_base;int lock;bool tx_pending,pd_capable;};
-static u32 fifo[8],flags;static int at,held,flushes,messages,completions,hard_resets,read_error;static struct pd_message received;
+static u32 fifo[24],flags;static int at,held,flushes,messages,completions,hard_resets,read_error;
+static int empty_reads,stay_empty,status_reads,fail_at=-1,warnings;static struct pd_message received;
 static void mutex_lock(int *p){(void)p;assert(!held);held=1;}
 static void mutex_unlock(int *p){(void)p;assert(held);held=0;}
-static int regmap_read(void *map,u32 reg,u32 *value){(void)map;assert(held);if(reg==SC27XX_INT_FLG){*value=flags;return 0;}assert(reg==SC27XX_PD_RX_BUF);if(read_error)return -EIO;assert(at<8);*value=fifo[at++];return 0;}
+static int regmap_read(void *map,u32 reg,u32 *value){
+ (void)map;assert(held);if(reg==SC27XX_INT_FLG){*value=flags;return 0;}
+ if(read_error)return -EIO;
+ if(reg==SC27XX_PD_STS1){status_reads++;if(stay_empty||empty_reads>0){if(empty_reads>0)empty_reads--;*value=SC27XX_PD_RX_EMPTY;}else *value=17;return 0;}
+ assert(reg==SC27XX_PD_RX_BUF);assert(status_reads>0&&!stay_empty&&!empty_reads);
+ if(at==fail_at)return -EIO;
+ assert(at<24);
+ *value=fifo[at++];
+ return 0;
+}
+#define regmap_read_poll_timeout(map,reg,val,cond,interval,timeout) \
+ ({int result=0,attempt=0;assert((interval)==50&&(timeout)==2000); \
+ do {result=regmap_read((map),(reg),&(val));if(result||(cond))break; \
+ if(++attempt>40){result=-ETIMEDOUT;break;}}while(1);result;})
 static int regmap_write(void *map,u32 reg,u32 value){(void)map;(void)value;assert(held&&reg==SC27XX_INT_CLR);return 0;}
 static int regmap_write_bits(void *map,u32 reg,u32 mask,u32 value){(void)map;assert(held&&reg==SC27XX_PD_CTRL);if(mask&SC27XX_PD_RX_FLASH){assert(value&SC27XX_PD_RX_FLASH);flushes++;}return 0;}
 static int cc_update(struct sc27xx_pd *pd,u32 reg,u32 mask,u32 value){(void)pd;(void)reg;(void)mask;(void)value;return 0;}
@@ -106,12 +181,28 @@ static void tcpm_pd_hard_reset(void *port){(void)port;hard_resets++;}
         after=r"""
 int main(void){
  struct sc27xx_pd pd={0};
- flags=SC27XX_PD_PKG_RV_FLAG;fifo[0]=0x1161;fifo[1]=0x90c8;fifo[2]=0x2601;fifo[3]=0xc0d8;fifo[4]=0xb104;
- sc27xx_pd_irq(1,&pd);assert(messages==1&&at==3&&flushes==1&&received.header==0x1161&&received.payload[0]==0x260190c8&&!held);
+ empty_reads=2;flags=SC27XX_PD_PKG_RV_FLAG;fifo[0]=0x1161;fifo[1]=0x90c8;fifo[2]=0x2601;fifo[3]=0xc0d8;fifo[4]=0xb104;
+ sc27xx_pd_irq(1,&pd);assert(messages==1&&at==3&&flushes==1&&received.header==0x1161&&received.payload[0]==0x260190c8&&!held&&status_reads==4);
  at=0;fifo[0]=PD_CTRL_GOOD_CRC;flags|=SC27XX_PD_TX_OK_FLAG;pd.tx_pending=true;
  sc27xx_pd_irq(1,&pd);assert(messages==1&&completions==1&&!pd.tx_pending&&at==1&&flushes==2&&!held);
  read_error=1;flags=SC27XX_PD_PKG_RV_FLAG;sc27xx_pd_irq(1,&pd);assert(messages==1&&completions==1&&flushes==3&&!held);
  flags=SC27XX_PD_HARD_RST_FLAG;sc27xx_pd_irq(1,&pd);assert(hard_resets==1&&!held);
+ /* A receive IRQ with a still-empty FIFO must never pop stale data. */
+ read_error=0;at=0;stay_empty=1;pd.pd_capable=false;flags=SC27XX_PD_PKG_RV_FLAG;
+ sc27xx_pd_irq(1,&pd);assert(at==0&&messages==1&&flushes==5&&!pd.pd_capable&&!held);
+ /* A failed/incomplete payload also cannot acquire PD current ownership. */
+ stay_empty=0;fail_at=2;fifo[0]=0x1161;
+ sc27xx_pd_irq(1,&pd);assert(at==2&&messages==1&&flushes==6&&!pd.pd_capable&&!held);
+ fail_at=-1;at=0;fifo[0]=0x43a1;
+ const u32 source[]={0x1912c,0x2d0c8,0x4b0c8,0x640c8};
+ for(int i=0;i<4;i++){fifo[1+2*i]=source[i]&0xffff;fifo[2+2*i]=source[i]>>16;}
+ fifo[9]=0xc0d8;fifo[10]=0xb104;
+ sc27xx_pd_irq(1,&pd);assert(messages==2&&at==9&&flushes==7&&pd.pd_capable&&!held);
+ for(int i=0;i<4;i++)assert(received.payload[i]==source[i]);
+ /* Report, but do not rewrite/discard, the observed malformed SourceCaps. */
+ at=0;fifo[1]=0x8f7d;fifo[2]=0x3800;int old_warnings=warnings;
+ sc27xx_pd_irq(1,&pd);assert(messages==3&&at==9&&flushes==8&&warnings==old_warnings+1);
+
  return 0;
 }
 """

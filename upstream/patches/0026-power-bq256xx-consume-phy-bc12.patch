@@ -1,0 +1,258 @@
+power: supply: bq256xx: consume PHY-owned U30 Air BC1.2 results
+
+Replace the independent PMIC polling/BQ IINDET fallback with one PHY owner.
+Its completion notifier updates the existing event-driven current worker.
+Type-C Rp, PD, user charging choices and charger power-role handling remain.
+
+--- a/drivers/power/supply/bq256xx_charger.c
++++ b/drivers/power/supply/bq256xx_charger.c
+@@ -279,10 +279,10 @@
+ 	bool bq2560x_chg;
+ 	bool chg_off;
+ 	bool pd_active;
+-	bool iindet_noted;
+ 	int usb_type;
+ 	struct device *pmic;
+-	struct extcon_dev *vbus_edev;
++	struct usb_phy *bc12_phy;
++	bool bc12_ready;
+ 	struct notifier_block vbus_nb;
+ 	struct delayed_work vbus_work;
+ };
+@@ -951,7 +951,9 @@
+ 		if (!bq->bq2560x_chg || (val->intval != POWER_SUPPLY_USB_TYPE_PD &&
+ 		    val->intval != POWER_SUPPLY_USB_TYPE_UNKNOWN))
+ 			return -EINVAL;
++		mutex_lock(&bq->lock);
+ 		WRITE_ONCE(bq->pd_active, val->intval == POWER_SUPPLY_USB_TYPE_PD);
++		mutex_unlock(&bq->lock);
+ 		if (!READ_ONCE(bq->pd_active))
+ 			mod_delayed_work(system_power_efficient_wq, &bq->vbus_work, 0);
+ 		power_supply_changed(psy);
+@@ -1719,29 +1721,14 @@
+ 	},
+ };
+ 
+-/* the input current for what the chip's input detection found (VBUS_STAT, CHARGER_STATUS_0 bits 7:5) */
+-static int bq2560x_chg_iindpm(unsigned int vbus_stat)
+-{
+-	switch (vbus_stat) {
+-	case BQ256XX_VBUS_STAT_USB_CDP:
+-		return 1500000;
+-	case BQ256XX_VBUS_STAT_USB_DCP:
+-		return 2000000;
+-	case BQ256XX_VBUS_STAT_NONSTD:
+-		return 1000000;
+-	default:	/* SDP, unknown adapter: what any USB port gives */
+-		return 500000;
+-	}
+-}
+-
+ /*
+- * The charger type from the UMP9620 PMIC's own charger detection, as the Unisoc kernel and sc2731_charger take it:
+- * reading its result starts nothing on D+/D-, which on this board are the USB gadget's lines to the computer.
+- * UNKNOWN when there is no PMIC device (yet) or no result.
++ * Consume the PHY owner's completed charger type; UNKNOWN while it detects.
+  */
+ static int bq2560x_chg_pmic_type(struct bq256xx_device *bq)
+ {
+-#if IS_REACHABLE(CONFIG_MFD_SC27XX_PMIC)
++	/* Retain the local PMIC reference only for the independent Type-C Rp
++	 * reader. BC1.2 results belong to the PHY, never a second detector.
++	 */
+ 	if (!bq->pmic) {
+ 		struct device_node *np = of_find_compatible_node(NULL, NULL, "sprd,ump9620");
+ 
+@@ -1749,27 +1736,20 @@
+ 			bq->pmic = bus_find_device_by_of_node(&spi_bus_type, np);
+ 		of_node_put(np);
+ 	}
+-	/* the PMIC driver bound: its drvdata is what sprd_pmic_detect_charger_type() reads */
+-	if (bq->pmic && spi_get_drvdata(to_spi_device(bq->pmic))) {
+-		switch (sprd_pmic_detect_charger_type(bq->pmic)) {
+-		case SDP_TYPE:
+-			return POWER_SUPPLY_USB_TYPE_SDP;
+-		case CDP_TYPE:
+-			return POWER_SUPPLY_USB_TYPE_CDP;
+-		case DCP_TYPE:
+-			return POWER_SUPPLY_USB_TYPE_DCP;
+-		default:
+-			break;
+-		}
+-	}
+-#endif
+-	return POWER_SUPPLY_USB_TYPE_UNKNOWN;
++	if (READ_ONCE(bq->bc12_phy->chg_state) != USB_CHARGER_PRESENT)
++		return POWER_SUPPLY_USB_TYPE_UNKNOWN;
++	switch (READ_ONCE(bq->bc12_phy->chg_type)) {
++	case SDP_TYPE: return POWER_SUPPLY_USB_TYPE_SDP;
++	case CDP_TYPE: return POWER_SUPPLY_USB_TYPE_CDP;
++	case DCP_TYPE: return POWER_SUPPLY_USB_TYPE_DCP;
++	default: return POWER_SUPPLY_USB_TYPE_UNKNOWN;
++	}
+ }
+ 
+ /*
+  * The input current a Type-C source offers with its Rp (USB Type-C Current: 1.5 A or 3 A), from the UMP9620's own
+- * Type-C block ("sprd,sc27xx-typec", typec@380 under the PMIC). It has no driver here, but its state machine runs by
+- * itself: STATUS bits 4:0 are the state (2: attached as a sink), bits 7:6 the source's Rp (0 default, 1 1.5 A,
++ * Type-C block ("sprd,sc27xx-typec", typec@380 under the PMIC). Its hardware status reports
++ * STATUS bits 4:0 are the state (2: attached as a sink), bits 7:6 the source's Rp (0 default, 1 1.5 A,
+  * 2 3 A), as Unisoc's sc27xx_pd reads them. A hub or splitter with a charger behind it answers BC1.2 as an SDP
+  * (500 mA) but offers more through its Rp. 3 A is permitted only when the attached source advertises it. 0 when there is no answer.
+  * One register read through the PMIC's regmap, as sprd_pmic_detect_charger_type() does.
+@@ -1828,15 +1808,18 @@
+ 
+ /*
+  * At probe and whenever VBUS comes or goes: charging on (Android leaves CHG_CONFIG off; unless userspace stopped it)
+- * and, with an outside supply, the input current from the PMIC's charger detection; only when that has no answer,
+- * from the charger's own input detection (IINDET_EN, which drives D+/D-).
++ * and, with an outside supply, the input current from the PHY-owned PMIC detection.
++ * The charger never starts a second D+/D- detector.
+  */
+ static void bq2560x_chg_detect(struct bq256xx_device *bq)
+ {
+-	unsigned int ctrl0 = 0, stat = 0, ctrl3, typec;
++	unsigned int ctrl0 = 0, stat = 0, typec;
+ 	bool off = READ_ONCE(bq->chg_off);
+ 	int ret, iindpm, rp, type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+ 	const char *src = "PMIC";
++
++	if (!READ_ONCE(bq->bc12_ready))
++		return;
+ 
+ 	mutex_lock(&bq->lock);
+ 	ret = regmap_read(bq->regmap, BQ256XX_CHARGER_CONTROL_0, &ctrl0);
+@@ -1866,22 +1849,10 @@
+ 		iindpm = 2000000;
+ 		break;
+ 	default:
+-		if (!bq->iindet_noted) {
+-			dev_info(bq->dev, "no charger type from the PMIC: the charger's own input detection instead\n");
+-			bq->iindet_noted = true;
+-		}
+-		src = "VBUS_STAT";
+-		ret = regmap_update_bits(bq->regmap, BQ256XX_CHARGER_CONTROL_3, BQ256XX_IINDET_EN,
+-					 BQ256XX_IINDET_EN);
+-		if (!ret)
+-			ret = regmap_read_poll_timeout(bq->regmap, BQ256XX_CHARGER_CONTROL_3, ctrl3,
+-						       !(ctrl3 & BQ256XX_IINDET_EN), 20000, 1000000);
+-		if (!ret)
+-			ret = regmap_read(bq->regmap, BQ256XX_CHARGER_STATUS_0, &stat);
+-		/* a detection that did not finish counts as a USB port */
+-		if (ret)
+-			dev_warn(bq->dev, "input detection did not finish: %d\n", ret);
+-		iindpm = ret ? 500000 : bq2560x_chg_iindpm(stat & BQ256XX_VBUS_STAT_MASK);
++		/* Detection pending/failed: retain the USB budget. The PHY
++		 * notifies us on completion. Never seize live DP/DM via IINDET.
++		 */
++		iindpm = 500000;
+ 		break;
+ 	}
+ 	/* a Type-C source's Rp says what it offers whatever BC1.2 found (a hub with a charger behind it: SDP) */
+@@ -1911,34 +1882,33 @@
+ {
+ 	struct bq256xx_device *bq = container_of(nb, struct bq256xx_device, vbus_nb);
+ 
+-	/* on a plug, give the chip its own detection first */
+-	mod_delayed_work(system_power_efficient_wq, &bq->vbus_work, msecs_to_jiffies(event ? 500 : 0));
++	/* The PHY publishes VBUS and the completed detector result. */
++	mod_delayed_work(system_power_efficient_wq, &bq->vbus_work, 0);
+ 	return NOTIFY_OK;
+ }
+ 
+-/*
+- * VBUS events come from the node's extcon. The U30 Air's names the PMIC's Type-C block, which has no driver here;
+- * then from the extcon-usb-gpio device, which the USB PHY uses for VBUS as well (phy-sprd-ums9620-ssphy.c).
+- */
+-static int bq2560x_chg_extcon(struct bq256xx_device *bq)
+-{
+-	struct device_node *np = of_parse_phandle(bq->dev->of_node, "extcon", 0);
+-	struct extcon_dev *edev;
+-
+-	if (!np || !of_device_is_compatible(np, "linux,extcon-usb-gpio")) {
+-		of_node_put(np);
+-		np = of_find_compatible_node(NULL, NULL, "linux,extcon-usb-gpio");
+-	}
+-	if (!np || !of_device_is_available(np)) {
+-		of_node_put(np);
+-		dev_warn(bq->dev, "no VBUS extcon: input current and charging are set at probe only\n");
+-		return 0;
+-	}
+-	edev = extcon_find_edev_by_node(np);
++/* The PHY is the only DP/DM detector owner on the battery board. */
++static void bq2560x_chg_phy_cleanup(void *data)
++{
++	struct bq256xx_device *bq = data;
++
++	WRITE_ONCE(bq->bc12_ready, false);
++	usb_unregister_notifier(bq->bc12_phy, &bq->vbus_nb);
++	cancel_delayed_work_sync(&bq->vbus_work);
++}
++
++static int bq2560x_chg_phy(struct bq256xx_device *bq)
++{
++	struct device_node *np = of_find_compatible_node(NULL, NULL, "sprd,qogirn6pro-ssphy");
++
++	if (!np)
++		return -ENODEV;
++	bq->bc12_phy = devm_usb_get_phy_by_node(bq->dev, np, NULL);
+ 	of_node_put(np);
+-	if (IS_ERR(edev))
+-		return dev_err_probe(bq->dev, PTR_ERR(edev), "VBUS extcon\n");
+-	bq->vbus_edev = edev;
++	if (IS_ERR(bq->bc12_phy))
++		return dev_err_probe(bq->dev, PTR_ERR(bq->bc12_phy), "BC1.2 PHY owner\n");
++	if (!bq->bc12_phy->charger_detect)
++		return dev_err_probe(bq->dev, -ENODEV, "PHY lacks BC1.2 ownership\n");
+ 	return 0;
+ }
+ 
+@@ -2282,9 +2252,6 @@
+ 		}
+ 		dev_info(dev, "part %u, rev %u\n", (part >> 3) & 0xf, part & 0x3);
+ 
+-		ret = bq2560x_chg_extcon(bq);
+-		if (ret)
+-			return ret;
+ 	}
+ 
+ 	bq->regmap = devm_regmap_init_i2c(chip,
+@@ -2310,6 +2277,15 @@
+ 	if (!bq->bq2560x_chg) {
+ 		bq->usb2_phy = devm_usb_get_phy(dev, USB_PHY_TYPE_USB2);
+ 		bq->usb3_phy = devm_usb_get_phy(dev, USB_PHY_TYPE_USB3);
++	}
++
++	if (bq->bq2560x_chg) {
++		ret = devm_delayed_work_autocancel(dev, &bq->vbus_work, bq2560x_chg_vbus_work);
++		if (ret)
++			return ret;
++		ret = bq2560x_chg_phy(bq);
++		if (ret)
++			return ret;
+ 	}
+ 
+ 	ret = bq256xx_power_supply_init(bq, &psy_cfg, dev);
+@@ -2351,15 +2327,14 @@
+ 		ret = devm_add_action_or_reset(dev, bq2560x_chg_put_pmic, bq);
+ 		if (ret)
+ 			return ret;
+-		ret = devm_delayed_work_autocancel(dev, &bq->vbus_work, bq2560x_chg_vbus_work);
++		WRITE_ONCE(bq->bc12_ready, true);
++		bq->vbus_nb.notifier_call = bq2560x_chg_vbus_notifier;
++		ret = usb_register_notifier(bq->bc12_phy, &bq->vbus_nb);
+ 		if (ret)
+ 			return ret;
+-		if (bq->vbus_edev) {
+-			bq->vbus_nb.notifier_call = bq2560x_chg_vbus_notifier;
+-			ret = devm_extcon_register_notifier(dev, bq->vbus_edev, EXTCON_USB, &bq->vbus_nb);
+-			if (ret)
+-				return dev_err_probe(dev, ret, "VBUS extcon notifier\n");
+-		}
++		ret = devm_add_action_or_reset(dev, bq2560x_chg_phy_cleanup, bq);
++		if (ret)
++			return ret;
+ 		ret = bq2560x_register_otg(bq);
+ 		if (ret)
+ 			return dev_err_probe(dev, ret, "OTG regulator\n");
