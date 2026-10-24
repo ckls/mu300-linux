@@ -42,7 +42,7 @@ with sync_playwright() as p:
                     const M=new Function('rpc','baseclass','L',sources[0])(rpc,baseclass,L);
                     M.localizeMenu=()=>{};
                     const Cores=new Function('baseclass','rpc','poll','M',sources[1])(baseclass,rpc,poll,M);
-                    window.cpuView=new Function('view','rpc','poll','M','Cores',sources[2])(view,rpc,poll,M,Cores);
+                    window.cpuView=new Function('view','rpc','poll','M','Cores','Idle',sources[2])(view,rpc,poll,M,Cores,{render:()=>document.createElement('div')});
                     const cpu={ok:1,available:true,persistent:false,policies:[],zones:[],voltage:{supported:false}};
                     document.body.append(cpuView.render(cpu));
                 }''',[sources,lang])

@@ -50,13 +50,17 @@ sms_event_decode() {
 # Wait until a relevant event or the real monotonic deadline. Unrelated radio
 # traffic does not start processes, scan logs or move the safety-sync deadline.
 sms_events_wait() {
-    local due=$1 line status
+    local due=$1 line status idle_slack=
+    { IFS= command read -r idle_slack < /proc/$$/timerslack_ns; } 2>/dev/null || idle_slack=
     sms_event=
     while :; do
         sms_clock || return 1
         [ "$SMS_NOW" -lt "$due" ] || return 0
         status=0
+        # Only the blocking wait gets slack; AT/route actions keep their defaults.
+        [ -z "$idle_slack" ] || { printf '500000000\n' > /proc/$$/timerslack_ns; } 2>/dev/null || :
         IFS= read -r -t "$((due - SMS_NOW))" line <&8 || status=$?
+        [ -z "$idle_slack" ] || { printf '%s\n' "$idle_slack" > /proc/$$/timerslack_ns; } 2>/dev/null || :
         if [ "$status" != 0 ]; then
             sms_clock || return 1
             # Bash's timer can fire just before /proc/uptime rounds up.

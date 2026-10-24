@@ -71,7 +71,7 @@ class SystemRuntime(unittest.TestCase):
         time.sleep(.3)
         (zone/'temp').write_text('90000\n')
         alarm=self.root/'run/mu300/thermal-alarm'
-        self.assertTrue(wait_for(alarm.exists,timeout=8))
+        self.assertTrue(wait_for(alarm.exists,timeout=13))
         self.assertIsNone(daemon.poll())
         self.assertEqual(self.helper_pid(daemon.pid),child)
         (zone/'temp').write_text('70000\n')

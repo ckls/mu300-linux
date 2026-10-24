@@ -101,6 +101,9 @@ for f in ./opt/mu300/bin/mu300-at ./opt/mu300/bin/mobile-data \
     ./www/luci-static/resources/view/mu300/traffic.js ./etc/init.d/unisoc-traffic \
     ./www/luci-static/resources/view/mu300/cpu.js ./etc/init.d/unisoc-cpu \
     ./www/luci-static/resources/mu300/auto-mode.js \
+    ./www/luci-static/resources/mu300/cpu-idle.js ./etc/init.d/unisoc-cpu-idle \
+    ./usr/libexec/rpcd/unisoc-cpu-idle ./usr/libexec/unisoc-modem/cpu-idle \
+    ./usr/libexec/unisoc-modem/cpu-idle.uc ./etc/rc.d/S99unisoc-cpu-idle \
     ./www/luci-static/resources/mu300/cpu-cores.js ./etc/init.d/unisoc-cpu-cores \
     ./usr/libexec/rpcd/unisoc-cpu-cores ./usr/libexec/unisoc-modem/cpu-cores \
     ./usr/libexec/unisoc-modem/cpu-cores.uc ./etc/rc.d/S99unisoc-cpu-cores \

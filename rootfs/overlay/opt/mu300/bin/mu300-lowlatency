@@ -3,6 +3,10 @@
 # CPU0 idle after boot. Apply the requested policy to every MU300 profile.
 # CPU0 only; no polling, frequency changes or radio/PCIe power commands.
 R=${MU300_SYSROOT:-}
+# An explicit web choice takes precedence over the previous startup policy.
+if [ -s "$R/etc/unisoc-cpu-idle.json" ]; then
+    UNISOC_IDLE_ROOT="$R" exec /usr/libexec/unisoc-modem/cpu-idle boot
+fi
 status=0
 for node in "$R"/sys/devices/system/cpu/cpu0/cpuidle/state*/disable; do
     [ -f "$node" ] || continue

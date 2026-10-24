@@ -36,6 +36,28 @@ esac""")
     def led(self, shell, *args, **extra):
         return self.script(shell, BIN/'mu300-led', *args, **dict(self.extra, **extra))
 
+    def test_tick_hint_tracks_timeout_charge_bucket_and_unplug(self):
+        for shell in self.each_shell():
+            state=self.root/'run/mu300/led'
+            for cap,color in ((9,'red'),(10,'blue'),(49,'blue'),(50,'white')):
+                (self.battery/'capacity').write_text(str(cap)+'\n')
+                result=self.led(shell,'tick',TEST_TIMEOUT='60')
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual((state/'.tick-hint').read_text(),
+                                 f'due 700\nbattery {color}:breathe:1\n')
+            charger=self.battery.parent/'bq256xx-charger';charger.mkdir(exist_ok=True)
+            (charger/'online').write_text('0\n')  # FGU may still say Charging after unplug.
+            (state/'.awake-until').write_text('160\n')
+            result=self.led(shell,'tick',TEST_TIMEOUT='60')
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual((state/'.tick-hint').read_text(),'due 160\nbattery white:steady:0\n')
+            (self.root/'proc/uptime').write_text('161.00 999.00\n')
+            self.assertEqual(self.led(shell,'tick',TEST_TIMEOUT='60').returncode,0)
+            self.assertEqual((state/'.tick-hint').read_text(),'due 761\nbattery white:steady:0\n')
+            self.assertTrue(all(self.value('sc27xx:'+c)=='0' for c in ('red','green','blue')))
+            charger.joinpath('online').unlink();charger.rmdir()
+            (self.root/'proc/uptime').write_text('100.00 999.00\n')
+
     def test_boot_frames_survive_power_refresh_and_leave_other_lamps_independent(self):
         for shell in self.each_shell():
             state=self.root/'run/mu300/led';state.mkdir(exist_ok=True)

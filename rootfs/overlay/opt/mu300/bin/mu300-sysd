@@ -1,8 +1,7 @@
 #!/usr/bin/ucode
 // Event-driven service core from liuwang97/cpu-load ccf89bb6, adapted locally.
 // Preserve this branch's U30 double-click, LED helper, per-policy owned caps,
-// vendor-kernel policy and five-second protection/LED deadlines. No mu300-power
-// protocol, adaptive thermal delay or upstream frequency backstop is assumed.
+// vendor-kernel policy, thermal ownership and board LED semantics.
 // --round runs one thermal round for offline tests; MU300_SYSROOT is a fake root.
 'use strict';
 
@@ -98,8 +97,15 @@ function which(cmd) {
 	return null;
 }
 
-// Retain the normal scheduler deadlines; no added timer slack.
-function fork_exec(exe, args, envs, cb) { return uloop.process(exe,args,envs,cb); }
+// Coalesce idle waits only. Never let child actions inherit this tolerance.
+const SLACK_FILE='/proc/self/timerslack_ns';
+let slack=(R=='' && MODE=='')?rd(SLACK_FILE):null;
+function slack_wait() {if(slack!=null)writefile(SLACK_FILE,'500000000');}
+function fork_exec(exe, args, envs, cb) {
+    if(slack!=null)writefile(SLACK_FILE,slack);
+    let p=uloop.process(exe,args,envs,cb);
+    slack_wait();return p;
+}
 
 let running = 0;   // started and not ended yet (the helper is not counted)
 let idle_check;    // set below
@@ -279,20 +285,52 @@ function press(code, kind) {
 }
 
 // The existing LED helper owns policy, custom styles, battery and charger state.
-// Keep its safety tick unchanged; power-supply events can request a sooner check.
+// Deadlines and power events drive checks; the helper remains the LED owner.
 const UEVENTS = 'power_supply,extcon';
+const LEDDIR=R+'/run/mu300/led', PSY=env('MU300_POWER_SUPPLY_DIR',R+'/sys/class/power_supply');
+let led_hint=null, led_seen=null;
+function led_hint_load() {
+    led_hint=null;
+    let lines=split(readfile(LEDDIR+'/.tick-hint') ?? '', '\n');
+    if(!match(lines[0] ?? '',/^due [0-9]+$/))return;
+    led_hint={due:+substr(lines[0],4),battery:substr(lines[1] ?? '',8)};
+}
+function led_observe() {
+    let battery='-';
+    if(led_hint?.battery!='-' && led_hint!=null) {
+        let cap=rd(PSY+'/sc27xx-fgu/capacity'), st=rd(PSY+'/sc27xx-fgu/status');
+        let on=rd(PSY+'/bq256xx-charger/online');
+        if(on==null)on=(st=='Charging' || st=='Full')?'1':'0';
+        if(on!='1')st='Discharging';
+        let color=+cap>=50?'white':'blue', mode='steady';
+        if(st=='Full')color='white';
+        if(st=='Charging') {mode='breathe';if(+cap<10)color='red';}
+        battery=digits(cap)?color+':'+mode+':'+(on=='1'?'1':'0'):'unavailable';
+    }
+    return [battery,rd(LEDDIR+'/.awake-until'),rd(LEDDIR+'/.boot-chase'),
+        rd(LEDDIR+'/.battery-breathe'),rd(R+'/run/mu300/led-siren.pid')];
+}
 let led_timer = null, led_soon_timer = null, led_ticking = false, led_again = false;
 function led_look() {
     if (led_ticking) { led_again = true; return; }
+    led_hint_load();
+    let observed=led_observe();
+    if(led_hint && now()<led_hint.due && sprintf('%J',observed)==led_seen) {led_arm();return;}
     led_ticking = true;
-    spawn(['mu300-led','sleep','--if-due'], () => {
+    spawn(['mu300-led','tick'], () => {
         led_ticking = false;
+        led_hint_load();led_seen=sprintf('%J',led_observe());
         if (led_again) { led_again = false; led_look(); }
         else led_arm();
     });
 }
 led_arm = function() {
-    led_timer = retimer(led_timer,5000, () => { led_timer = null; led_look(); });
+    led_hint_load();
+    let on=rd(PSY+'/bq256xx-charger/online'), safety=on=='1'?30:90;
+    let left=led_hint?min(safety,led_hint.due-now()):5;
+    let due=rd(LEDDIR+'/.awake-until');
+    if(on!='1' && digits(due) && +due>now())left=min(left,+due-now());
+    led_timer = retimer(led_timer,max(50,int(left*1000)+50), () => { led_timer = null; led_look(); });
 };
 function led_soon() {
     led_soon_timer ??= uloop.timer(500, () => { led_soon_timer = null; led_look(); });
@@ -404,6 +442,7 @@ const CRIT = num('MU300_THERMAL_CRIT', 105000);
 const BATT_HOT = num('MU300_BATTERY_HOT', 500);
 const BATT_COOL = num('MU300_BATTERY_COOL', 450);
 const WAIT = 5;
+const MAX_WAIT=30, MAX_WAIT_ALONE=10;
 const TH = R + '/sys/class/thermal';
 const LED = BIN + '/mu300-led';
 const CAPS = R + '/run/mu300/thermal-caps';
@@ -427,7 +466,8 @@ function hottest(zones) {
 	let t = 0;
 	for (let z in zones) {
 		let v = rd(TH + '/' + z + '/temp');
-		if (integer(v) && +v > t)
+        if (!integer(v))die('无法读取温区 '+z);
+        if (+v > t)
 			t = +v;
 	}
 	return t;
@@ -561,7 +601,10 @@ function thermal_round() {
     } else if (exists(ALARM) && t<=COOL && bn!=null && bn<=BATT_COOL) {
         unlink(ALARM); log('thermal-guard','cooled down (SoC '+t+' mC, battery '+bs+' dC): LED alarm off'); chain([LED,'alarm','off']);
     }
-    return 5; // Preserve this branch's protection cadence, including without native cooling.
+    if(!length(zones) || exists(ALARM) || length(names(CAPS,'')) || (b!=null && !integer(b)))return WAIT;
+    let gap=WAIT+int((HOT-t)/2000);
+    if(integer(b))gap=min(gap,WAIT+int((BATT_HOT-+b)/10));
+    return max(WAIT,min(gap,throttle?MAX_WAIT_ALONE:MAX_WAIT));
 }
 function thermal_next() {
 	let gap = WAIT;
@@ -643,6 +686,7 @@ if (parts.thermal) {
 	thermal_init();
 	thermal_next();
 }
+slack_wait();
 uloop.run();
 helper_close();
 if (rd(OWN_DIR+'/pid')==''+OWN_PID) { unlink(OWN_DIR+'/pid'); rmdir(OWN_DIR); }

@@ -27,6 +27,7 @@ class NativeService:
 
 @unittest.skipUnless(runtime_available(),'real ucode/uloop/socket required')
 class NativeButtons(NativeService,old.Buttons):
+    LED_TICK='mu300-led tick'
     def setUp(self):
         super().setUp()
         # The release ships a full busybox sleep. The minimal OpenWrt test

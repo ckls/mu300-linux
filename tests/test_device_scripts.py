@@ -346,7 +346,7 @@ class Buttons(ShellTest):
         cases = [('116 short', ['mu300-led wake']),
                  ('138 short', ['mu300-led wake', 'mu300-wifi-band toggle']),
                  ('138 long', ['mu300-led wake', 'systemctl is-active --quiet mu300-hotspot', 'systemctl start mu300-hotspot']),
-                 ('0 tick', ['mu300-led sleep --if-due']),
+                 ('0 tick', [getattr(self,'LED_TICK','mu300-led sleep --if-due')]),
                  ('116 long', ['mu300-led wake', 'systemctl poweroff']),
                  ('115 short', [])]
         for shell in self.each_shell():

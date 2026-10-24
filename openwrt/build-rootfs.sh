@@ -245,6 +245,7 @@ if [ -d /in/luci-plugin ]; then
     ucode $R/usr/libexec/unisoc-modem/disable-channel-analysis $R
     ucode $R/usr/libexec/unisoc-modem/filter-wifi-ciphers $R
     chmod 0755 $R/etc/init.d/unisoc-cpu $R/etc/init.d/unisoc-cpu-cores $R/usr/libexec/rpcd/unisoc-cpu-cores
+    chmod 0755 $R/etc/init.d/unisoc-cpu-idle $R/usr/libexec/rpcd/unisoc-cpu-idle
     chmod 0600 $R/etc/config/unisoc_apn
     chmod 0755 $R/etc/init.d/unisoc-ttl $R/etc/hotplug.d/iface/92-unisoc-ttl $R/etc/uci-defaults/98-unisoc-ttl
     chmod 0755 $R/etc/uci-defaults/97-unisoc-upgrade-policy
@@ -322,6 +323,7 @@ if [ -d /in/luci-plugin ]; then
     ln -sf ../init.d/unisoc-traffic $R/etc/rc.d/K01unisoc-traffic
     ln -sf ../init.d/unisoc-cpu $R/etc/rc.d/S99unisoc-cpu
     ln -sf ../init.d/unisoc-cpu-cores $R/etc/rc.d/S99unisoc-cpu-cores
+    ln -sf ../init.d/unisoc-cpu-idle $R/etc/rc.d/S99unisoc-cpu-idle
     ln -sf ../init.d/unisoc-cpu $R/etc/rc.d/K89unisoc-cpu
     ln -sf ../init.d/mu300-charge $R/etc/rc.d/S97mu300-charge
     ln -sf ../init.d/mu300-charge $R/etc/rc.d/K20mu300-charge

@@ -59,12 +59,15 @@ native_cpu_cooling() {
 }
 
 hottest() {
-    local max=0 t
+    local max=0 t valid=1 found=0
     for z in "$R"/sys/class/thermal/thermal_zone*/temp; do
-        read -r t < "$z" 2>/dev/null || continue
+        read -r t < "$z" 2>/dev/null || { valid=0; continue; }
+        case $t in ''|*[!0-9]*) valid=0; continue ;; esac
+        found=1
         [ "$t" -gt "$max" ] 2>/dev/null && max=$t
     done
     echo "$max"
+    [ "$valid" = 1 ] && [ "$found" = 1 ]
 }
 DEVICE=$(${MU300_BIN:-/opt/mu300/bin}/mu300-device)
 battery() {  # the battery's temperature in tenths of a degree; the U30 Air only
@@ -138,6 +141,7 @@ guard_raise() {
 }
 while :; do
     t=$(hottest)
+    sensors_ok=$?
     throttle=$legacy_throttle
     emergency=$legacy_throttle
     if [ -d "$R/sys/module/mu300_thermal" ]; then
@@ -169,5 +173,20 @@ while :; do
         "$LED" alarm off
     fi
     [ -n "$R" ] && exit 0
-    sleep 5
+    # Adaptive safety cadence; retain fast checks near thresholds or on errors.
+    gap=5
+    if [ "$sensors_ok" = 0 ] && [ ! -e "$ALARM" ] && ! ls "$CAPS"/policy* >/dev/null 2>&1; then
+        gap=$((5 + (HOT - t) / 2000))
+        case $b in ''|*[!0-9]*) [ -z "$b" ] || gap=5 ;; *)
+            bgap=$((5 + (BATT_HOT - b) / 10)); [ "$gap" -le "$bgap" ] || gap=$bgap ;;
+        esac
+        max_gap=30; [ "$throttle" != 1 ] || max_gap=10
+        [ "$gap" -le "$max_gap" ] || gap=$max_gap
+        [ "$gap" -ge 5 ] || gap=5
+    fi
+    idle_slack=
+    { IFS= read -r idle_slack < /proc/$$/timerslack_ns; } 2>/dev/null || idle_slack=
+    [ -z "$idle_slack" ] || { printf '500000000\n' > /proc/$$/timerslack_ns; } 2>/dev/null
+    sleep "$gap"
+    [ -z "$idle_slack" ] || { printf '%s\n' "$idle_slack" > /proc/$$/timerslack_ns; } 2>/dev/null
 done

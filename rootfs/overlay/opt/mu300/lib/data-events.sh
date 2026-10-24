@@ -53,7 +53,8 @@ watch_event_decode() {
     esac
 }
 watch_next() {
-    local interval=${MU300_WATCH_INTERVAL:-30} due line status
+    local interval=${MU300_WATCH_INTERVAL:-30} due line status idle_slack=
+    { IFS= command read -r idle_slack < /proc/$$/timerslack_ns; } 2>/dev/null || idle_slack=
     watch_event=
     case "$interval" in ''|*[!0-9]*) echo 'mobile-data: watch interval must be whole seconds' >&2; return 1 ;; esac
     [ "$watch_events" = 1 ] || return 1
@@ -61,7 +62,10 @@ watch_next() {
     due=$((WATCH_NOW + interval))
     while [ "$WATCH_NOW" -lt "$due" ]; do
         status=0
+        # Only the blocking wait gets slack; AT/route actions keep their defaults.
+        [ -z "$idle_slack" ] || { printf '500000000\n' > /proc/$$/timerslack_ns; } 2>/dev/null || :
         IFS= read -r -t "$((due - WATCH_NOW))" line <&8 || status=$?
+        [ -z "$idle_slack" ] || { printf '%s\n' "$idle_slack" > /proc/$$/timerslack_ns; } 2>/dev/null || :
         watch_clock || return 1
         if [ "$status" != 0 ]; then
             # Bash read reports its timer as 128 + SIGALRM. /proc/uptime

@@ -97,6 +97,33 @@ awake() {
     until=$(rd "$STATE/.awake-until") || return 1
     [ "$(uptime_s)" -lt "${until:-0}" ]
 }
+# A deadline hint for sysd. Keep all board colours and physical writes here.
+tick_hint() {
+    local now due until cap status color mode marker=-
+    now=$(uptime_s); due=$((now + 600))
+    until=$(rd "$STATE/.awake-until")
+    case $until in ''|*[!0-9]*) ;; *)
+        [ "$KEEP_LIT" = 1 ] || [ "$TIMEOUT" = 0 ] || [ "$until" -le "$now" ] || due=$until ;;
+    esac
+    if [ "$DEVICE" = u30air ]; then
+        local root=${MU300_POWER_SUPPLY_DIR:-$R/sys/class/power_supply}
+        cap=$(rd "$root/sc27xx-fgu/capacity"); status=$(rd "$root/sc27xx-fgu/status")
+        [ "$KEEP_LIT" != 0 ] || status=Discharging
+        case $cap in ''|*[!0-9]*) marker=unavailable ;; *)
+            color=white; [ "$cap" -ge 50 ] || color=blue
+            [ "$status" != Full ] || color=white
+            mode=steady
+            if [ "$status" = Charging ]; then mode=breathe; [ "$cap" -ge 10 ] || color=red; fi
+            marker=$color:$mode:$KEEP_LIT ;;
+        esac
+    fi
+    mkdir -p "$STATE" || return 0
+    (umask 077; printf 'due %s\nbattery %s\n' "$due" "$marker" > "$STATE/.tick-hint.new") &&
+        mv "$STATE/.tick-hint.new" "$STATE/.tick-hint"
+    return 0
+}
+# Do not write hints from the long-lived animation workers.
+case ${1:-} in siren|boot-worker|test) ;; *) trap tick_hint EXIT ;; esac
 vendor_ldo() {  # vendor_ldo zte-ldoN: the 5.4 kernel's switch for that LDO, if there
     case $1 in zte-ldo[0-9]) ;; *) return 1 ;; esac
     for f in "$R"/sys/devices/platform/*zte*ldo*leds*/vddcama${1#zte-ldo}_status; do [ -e "$f" ] && { echo "$f"; return 0; }; done
@@ -273,10 +300,11 @@ case "$1 ${2:-}" in
         echo $(( $(uptime_s) + TIMEOUT )) > "$STATE/.awake-until"
         battery
         show_all ;;
-    "sleep "*)
+    "tick "*|"sleep "*)
+        [ "$1" != tick ] || battery
         [ "$TIMEOUT" = 0 ] && exit 0
-        if [ "${2:-}" = --if-due ] && awake; then exit 0; fi
-        [ -e "$STATE/.awake-until" ] || [ "${2:-}" != --if-due ] || exit 0   # dark already
+        if { [ "$1" = tick ] || [ "${2:-}" = --if-due ]; } && awake; then exit 0; fi
+        [ -e "$STATE/.awake-until" ] || { [ "$1" != tick ] && [ "${2:-}" != --if-due ]; } || exit 0
         rm -f "$STATE/.awake-until"
         for f in "$STATE"/*; do [ -f "$f" ] && write "${f##*/}" 0; done ;;
     "alarm on")

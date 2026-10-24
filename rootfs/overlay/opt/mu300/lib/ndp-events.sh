@@ -55,14 +55,18 @@ ndp_event_relevant() {
     return 0
 }
 ndp_events_wait() {
-    local due line status
+    local due line status idle_slack=
+    { IFS= command read -r idle_slack < /proc/$$/timerslack_ns; } 2>/dev/null || idle_slack=
     NDP_DIRTY=0
     ndp_clock || return 1
     due=$NDP_TICK_AT
     [ "$NDP_FULL_AT" -ge "$due" ] || due=$NDP_FULL_AT
     while [ "$NDP_NOW" -lt "$due" ]; do
         status=0
+        # Only the blocking wait gets slack; AT/route actions keep their defaults.
+        [ -z "$idle_slack" ] || { printf '500000000\n' > /proc/$$/timerslack_ns; } 2>/dev/null || :
         IFS= read -r -t "$((due - NDP_NOW))" line <&8 || status=$?
+        [ -z "$idle_slack" ] || { printf '%s\n' "$idle_slack" > /proc/$$/timerslack_ns; } 2>/dev/null || :
         ndp_clock || return 1
         if [ "$status" != 0 ]; then
             # Bash timeout is not EOF, even if uptime rounds below due.
