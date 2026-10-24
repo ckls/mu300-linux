@@ -433,19 +433,23 @@ return view.extend({
 		var c = this._slowCell;
 		var s = st.sig || null;
 		if (s && !s.error && (!c || !c.ts || (s.ts || 0) >= c.ts)) {
-			if (c && s.partial) {
+			if (c && c.card != null && s.card != null && c.card !== s.card) c = null;
+			if (c && !c.error && s.partial) {
 				/* 核心首包先更新驻网状态，但不让临时 CESQ 空值擦掉上一份工程信号。 */
 				c = Object.assign({}, c, {
-					ts: s.ts, cfun: s.cfun, reg: s.reg, reg5g: s.reg5g
+					ts: s.ts, card: s.card, cfun: s.cfun, reg: s.reg, reg5g: s.reg5g
 				});
 			} else c = c ? Object.assign({}, c, {
-				ts: s.ts, cfun: s.cfun, reg: s.reg, reg5g: s.reg5g,
+				ts: s.ts, card: s.card, cfun: s.cfun, reg: s.reg, reg5g: s.reg5g,
 				sig_src: s.sig_src, sig: s.sig, lte: s.lte, nr: s.nr
-			}) : s;
+			}) : Object.assign({}, s);
+			/* A newer successful read supersedes the slow tier's old failure. */
+			delete c.error;
 		}
 		this.lastCell = c;
 		/* 慢档数据（邻区/运营商/身份）只在整份缓存的时间戳变化时重绘 */
-		var fullTs = st.cell ? [st.cell.ts, st.cell.partial || 0, st.cell.neigh_pending || 0].join(':') : '';
+		var fullTs = [c && c.card, st.cell && st.cell.ts, st.cell && st.cell.partial || 0,
+			st.cell && st.cell.neigh_pending || 0, c && c.error || ''].join(':');
 		var slowChanged = fullTs !== this.lastFullTs;
 		this.lastFullTs = fullTs;
 

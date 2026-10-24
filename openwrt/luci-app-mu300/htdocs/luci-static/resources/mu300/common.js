@@ -1295,7 +1295,8 @@ function carrierName(op) {
  * Explicit null in a completed stage means unavailable, not stale data. */
 function mergeCell(previous, next) {
 	if (!next) return previous || null;
-	if (!next.partial || !previous || next.error) return Object.assign({}, next);
+	if (!next.partial || !previous || next.error || previous.error || previous.card !== next.card)
+		return Object.assign({}, next);
 	var merged = Object.assign({}, next);
 	['ident', 'qos'].forEach(function(k) { merged[k] = previous[k]; });
 	if (next.neigh_pending) merged.neigh = previous.neigh;
