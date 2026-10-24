@@ -25,7 +25,7 @@ def sources():
     paths += [HERE/'build-ota-native.py']
     paths += [p for p in (HERE/'ui/src').rglob('*') if p.is_file()]
     paths += [HERE/'ui'/n for n in ('package.json','package-lock.json','vite.config.ts','tailwind.config.js','postcss.config.js','tsconfig.json','index.html','diff.html','ota.html','rust-toolchain.toml')]
-    paths += [HERE/'ui/src-tauri'/n for n in ('Cargo.toml','Cargo.lock','build.rs','tauri.conf.json','src/main.rs','capabilities/default.json','icons/icon.ico','icons/icon.icns','icons/icon.png')]
+    paths += [HERE/'ui/src-tauri'/n for n in ('Cargo.toml','Cargo.lock','build.rs','tauri.conf.json','src/main.rs','src/distribution.rs','capabilities/default.json','icons/icon.ico','icons/icon.icns','icons/icon.png')]
     plugin = HERE.parent/'openwrt/luci-app-unisoc-ota'
     paths += list((plugin/'htdocs').rglob('*.js'))
     paths += [plugin/'root/usr/share/rpcd/acl.d/unisoc-ota.json']

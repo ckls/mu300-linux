@@ -135,7 +135,7 @@ def refresh_rpc(client):
 
 
 class Desktop:
-    def __init__(self, root, emit):
+    def __init__(self, root, emit, data_directory=None):
         self.root = Path(root)
         self.emit = emit
         self.analysis = None
@@ -145,6 +145,9 @@ class Desktop:
         self.activated = set()
         self.pending_reboot = None
         self.last_event = 0
+        from .release_index import index_directory
+        self.index_directory = Path(data_directory)/'release-indexes' if data_directory is not None else index_directory()
+        self.index_path = None
 
     def progress(self, stage, path):
         if time.monotonic() - self.last_event >= .4:
@@ -154,7 +157,13 @@ class Desktop:
     def dispatch(self, command, p):
         self.emit('ota_activity', {'busy': True})
         try:
+            if command == 'ota_export_index':
+                if not self.index_path:
+                    raise ValueError('Analyze a compatible release first / 请先完成兼容版本的差异分析')
+                from .release_index import read_index, write_index
+                return {'path':str(write_index(p['output'],read_index(self.index_path)))}
             if command in ('ota_analyze', 'ota_export'):
+                self.index_path = None
                 if command == 'ota_analyze':
                     self.analysis = dict(old=p['old'], new=p['new'])
                 if not self.analysis:
@@ -162,13 +171,15 @@ class Desktop:
                 if command == 'ota_export' and p.get('output', '').lower().endswith('.zip'):
                     with tempfile.TemporaryDirectory(prefix='openwrt-ota-') as directory:
                         patch = Path(directory) / 'update.ota'
-                        result = analyze(self.analysis['old'], self.analysis['new'], patch, self.progress)
+                        result = analyze(self.analysis['old'], self.analysis['new'], patch, self.progress, index_directory=self.index_directory)
+                        self.index_path = result.get('index_path')
                         from .ota_bundle import export_bundle
                         export_bundle(patch, p['output'], self.root)
                         result['output'] = p['output']
                     return result
                 result = analyze(self.analysis['old'], self.analysis['new'],
-                                 p.get('output') if command == 'ota_export' else None, self.progress)
+                                 p.get('output') if command == 'ota_export' else None, self.progress, index_directory=self.index_directory)
+                self.index_path = result.get('index_path')
                 return result
             if command == 'ota_package':
                 archive = Path(p.get('path') or self.root / 'update.ota')

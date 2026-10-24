@@ -31,7 +31,7 @@ class Ext4Tests(unittest.TestCase):
         (repo/'work').mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='ota-test-',dir=repo/'work') as d:
             d=Path(d)
-            for i in (1,2):
+            for i in (1,2,3):
                 release=d/str(i);source=release/'root';(source/'usr/lib').mkdir(parents=True)
                 (source/'etc/config').mkdir(parents=True)
                 (source/'usr/lib/example').write_bytes(('version '+str(i)).encode())
@@ -52,12 +52,19 @@ class Ext4Tests(unittest.TestCase):
                 (files/'device-profile.json').write_text(json.dumps({'profile':'e5'}))
                 (files/'RELEASE.json').write_text(json.dumps(dict(profile='e5',image_version='e5-r'+str(i),kernel_release='6.18.54-e5-test',openwrt='25.12.5')))
                 (files/'SHA256SUMS').write_text(''.join(hashlib.sha256((files/n).read_bytes()).hexdigest()+'  files/'+n+'\n' for n in ('boot.img','openwrt.ext4.gz')))
-            out=d/'patch.ota';result=analyze(d/'1',d/'2',out)
+            out=d/'patch.ota';result=analyze(d/'1',d/'2',out,index_directory=d/'indexes')
             self.assertTrue(result['can_export'],result['blockers'])
             self.assertEqual([o['path'] for o in result['manifest']['operations']],['usr/lib/example'])
             with Patch(out) as patch:
                 h=result['manifest']['operations'][0]['after']['sha256']
                 self.assertEqual(patch.archive.read('blobs/'+h),b'version 2')
+            expected=analyze(d/'2',d/'3')
+            shutil.rmtree(d/'2')
+            from_index=analyze(result['index_path'],d/'3',d/'from-index.ota')
+            self.assertEqual(from_index['manifest'],expected['manifest'])
+            with Patch(d/'from-index.ota') as patch:
+                h=from_index['manifest']['operations'][0]['after']['sha256']
+                self.assertEqual(patch.archive.read('blobs/'+h),b'version 3')
             self.assertFalse(any(p.name.startswith('tmp') for p in d.rglob('*')))
 
 

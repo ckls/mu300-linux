@@ -258,8 +258,8 @@ class Adapter:
             if device['model'] not in profile['android_models']:
                 raise ValueError('Package model differs / 安装包机型不匹配: ' + device['model'])
             device['profile'] = profile['profile']
-            if device['slot'] != '_a' or properties['ro.boot.verifiedbootstate'] != 'orange':
-                raise ValueError('E5 requires unlocked Android slot A / E5 要求已解锁且当前 Android 在 A 槽')
+            if device['slot'] != '_a':
+                raise ValueError('E5 requires Android slot A / E5 要求当前 Android 在 A 槽')
         else:
             device['profile'] = self.legacy.android_profile(device['model'] + '\n' + properties['ro.product.device'], properties['ro.board.platform'])
         # Trial boot uses only the boot signature, boot-chain check and misc.

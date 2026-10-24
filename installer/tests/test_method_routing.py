@@ -71,6 +71,34 @@ class MethodRouting(unittest.TestCase):
                         self.assertNotIn('tf_bytes',device)
                         if method=='boot':a.read_gpt.assert_not_called()
 
+    def test_e5_boot_state_does_not_gate_rooted_installations(self):
+        profiles=[('e5','E5','fixture'),('m8','M8','fixture'),('t551m','T551M','fixture'),
+                  ('t512n','T512N','fixture'),('yuanhang41s','ZTE 7546N','P720S11'),('k1','angelcare K1','ums9157_2h10')]
+        for profile,model,board in profiles:
+            for state in ('orange','green','yellow','red','',None):
+                for method in ('part','reinstall','image','boot'):
+                    with self.subTest(profile=profile,state=state,method=method):
+                        a=self.adapter()
+                        properties=a.adb.properties()
+                        properties.update({'ro.product.model':model,'ro.product.device':board})
+                        if state is None:properties.pop('ro.boot.verifiedbootstate')
+                        else:properties['ro.boot.verifiedbootstate']=state
+                        a.adb.properties=Mock(return_value=properties)
+                        a.legacy.package_profile.return_value={'profile':profile,'android_models':[model]}
+                        result=a.probe(SERIAL,method)
+                        self.assertEqual(result['profile'],profile)
+                        self.assertTrue(result['root'])
+
+    def test_e5_without_bl_gate_still_requires_root_model_and_slot(self):
+        a=self.adapter();a.adb.root_status=Mock(return_value='root_permission')
+        self.assertFalse(a.probe(SERIAL,'part')['root'])
+        a.read_gpt.assert_not_called()
+        for field,value,error in [('ro.product.model','wrong-model','model differs'),('ro.boot.slot_suffix','','slot')]:
+            a=self.adapter();properties=a.adb.properties();properties[field]=value
+            a.adb.properties=Mock(return_value=properties)
+            with self.subTest(field=field),self.assertRaisesRegex(ValueError,error):a.probe(SERIAL,'part')
+            a.read_gpt.assert_not_called()
+
     def test_reinstall_plan_on_device_without_card(self):
         for kind in ('e5','mu300'):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:

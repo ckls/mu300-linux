@@ -1,12 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod distribution;
+
 use serde_json::{json, Value};
 use std::{collections::HashMap, io::{BufRead, BufReader, Write}, path::PathBuf,
     process::{ChildStdin, Command, Stdio}, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}}};
 use tauri::{Emitter, Manager, State};
 use tokio::sync::oneshot;
 
-const COMMANDS: &[&str] = &["hello","snapshot","list","package","devices","adb_connect","adb_disconnect","probe","probe_update","plan","start","resume","retry","cancel","can_close","export","import","diagnostics","verify_openwrt","ota_analyze","ota_export","ota_package","ota_probe","ota_apply","ota_status","ota_reboot"];
+const COMMANDS: &[&str] = &["hello","snapshot","list","package","devices","adb_connect","adb_disconnect","probe","probe_update","plan","start","resume","retry","cancel","can_close","export","import","diagnostics","verify_openwrt","ota_analyze","ota_export","ota_export_index","ota_package","ota_probe","ota_apply","ota_status","ota_reboot"];
 struct Bridge {
     input: Mutex<Option<ChildStdin>>,
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>,
@@ -40,8 +42,27 @@ async fn pick_package() -> Option<String> {
     tauri::async_runtime::spawn_blocking(|| rfd::FileDialog::new().set_title("OpenWrt package / 安装包目录").pick_folder().map(|p|p.to_string_lossy().to_string())).await.ok().flatten()
 }
 #[tauri::command]
-async fn pick_ota_input() -> Option<String> {
-    tauri::async_runtime::spawn_blocking(|| rfd::FileDialog::new().set_title("Select release ZIP or OTA / 选择发行包或差异包").add_filter("OpenWrt packages", &["zip","ota"]).pick_file().map(|p|p.to_string_lossy().to_string())).await.ok().flatten()
+async fn pick_ota_input(kind: Option<String>) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dialog = rfd::FileDialog::new().set_title("Select OpenWrt package / 选择安装包或版本摘要");
+        let dialog = if kind.as_deref() == Some("old") {
+            let dialog = dialog.add_filter("Release ZIP or version index / 发行包或版本摘要", &["zip","json"]);
+            let directory = data_directory().join("release-indexes");
+            if directory.is_dir() { dialog.set_directory(directory) } else { dialog }
+        } else { dialog.add_filter("OpenWrt packages", &["zip","ota"]) };
+        dialog.pick_file().map(|p|p.to_string_lossy().to_string())
+    }).await.ok().flatten()
+}
+#[tauri::command]
+async fn save_index() -> Option<String> {
+    tauri::async_runtime::spawn_blocking(|| rfd::FileDialog::new().set_file_name("OpenWrt-Version.owrt-index.json")
+        .add_filter("OpenWrt version index", &["json"]).save_file().map(|p|p.to_string_lossy().to_string())).await.ok().flatten()
+}
+#[tauri::command]
+fn open_index_data() -> Result<(), String> {
+    let directory = data_directory().join("release-indexes");
+    std::fs::create_dir_all(&directory).map_err(|e|e.to_string())?;
+    open_native(&directory)
 }
 #[tauri::command]
 async fn save_ota(suggested_name: Option<String>, release_path: Option<String>) -> Option<String> {
@@ -116,29 +137,34 @@ fn data_directory() -> PathBuf {
     return std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("OpenWrt-Installer");
 }
 
-fn distribution_root(executable: &std::path::Path) -> Result<PathBuf, String> {
+fn distribution_root(executable: &std::path::Path) -> Result<Option<PathBuf>, String> {
     #[cfg(target_os = "macos")]
-    for ancestor in executable.ancestors() {
-        if ancestor.extension().is_some_and(|ext| ext == "app") {
-            let root = ancestor.parent().ok_or("Application has no parent directory")?;
-            if root.join("OpenWrt-Installer.py").is_file()
-                && (root.join("desktop/manifest.json").is_file() || root.join("files/device-profile.json").is_file())
-                || root.join("OpenWrt-Diff-Studio.py").is_file() || root.join("update.ota").is_file() {
-                return Ok(root.to_path_buf());
-            }
-            // Finder may translocate quarantined applications. Ask for the
-            // extracted package rather than guessing its original location.
-            return rfd::FileDialog::new().set_title("Select extracted OpenWrt package / 选择完整解压的安装包")
-                .pick_folder().ok_or_else(|| "No package selected".into());
+    if let Some(app) = distribution::app_bundle(executable) {
+        let adjacent = app.parent().ok_or("Application has no parent directory")?;
+        let backend = "tools/macos/backend/openwrt-backend";
+        if let Ok(root) = distribution::check_root(adjacent, backend) {
+            return Ok(Some(root));
         }
+        // Gatekeeper can run the APP from AppTranslocation without its sibling
+        // files. Only an explicit selection may choose another distribution.
+        rfd::MessageDialog::new().set_title("Locate OpenWrt package / 选择安装包")
+            .set_description("The app cannot access its adjacent package files. macOS may be running an isolated copy, or the app was moved. Select the fully extracted package folder containing tools and the installation files. Cancel closes the installer.\nAPP 无法访问相邻的安装文件，可能正由 macOS 隔离运行，或 APP 已被单独移动。请选择完整解压、包含 tools 和安装文件的目录；取消即可退出。")
+            .set_level(rfd::MessageLevel::Info).show();
+        return Ok(distribution::choose_root(backend,
+            || rfd::FileDialog::new()
+                .set_title("Select extracted OpenWrt package / 选择完整解压的安装包")
+                .pick_folder(),
+            |message| { rfd::MessageDialog::new().set_title("Select package again / 请重新选择安装包")
+                .set_description(message).set_level(rfd::MessageLevel::Error).show(); },
+        ));
     }
-    executable.parent().map(|p|p.to_path_buf()).ok_or_else(|| "Executable has no directory".into())
+    executable.parent().map(|p|Some(p.to_path_buf())).ok_or_else(|| "Executable has no directory".into())
 }
 
 fn entry_page(executable: &std::path::Path, has_patch: bool) -> (&'static str, &'static str) {
     // Exported macOS updaters retain the studio's internal executable name.
     // Their enclosing app bundle is the public entry point instead.
-    let entry = executable.ancestors().find(|p| p.extension().is_some_and(|ext| ext == "app"))
+    let entry = distribution::app_bundle(executable)
         .unwrap_or(executable).file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
     if entry.contains("updater") {
         ("ota.html", "OpenWrt Patch Updater")
@@ -163,14 +189,14 @@ fn configure_entry(config: &mut tauri::Config, executable: &std::path::Path, has
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let executable = std::env::current_exe()?;
-    let root = distribution_root(&executable).map_err(std::io::Error::other)?;
+    let Some(root) = distribution_root(&executable).map_err(std::io::Error::other)? else { return Ok(()); };
     let mut context = tauri::generate_context!();
     configure_entry(context.config_mut(), &executable, root.join("update.ota").is_file());
     let directory = data_directory();
     let bridge = Arc::new(Bridge {input:Mutex::new(None),pending:Mutex::new(HashMap::new()),sequence:AtomicU64::new(1),busy:AtomicBool::new(false),directory,export_log:Mutex::new(None)});
     let setup_state = bridge.clone();
     let app = tauri::Builder::default().manage(bridge.clone())
-        .invoke_handler(tauri::generate_handler![backend_request,pick_package,pick_ota_input,save_ota,pick_recovery,save_backup,save_log,write_log,open_data,open_repository])
+        .invoke_handler(tauri::generate_handler![backend_request,pick_package,pick_ota_input,save_ota,save_index,open_index_data,pick_recovery,save_backup,save_log,write_log,open_data,open_repository])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             let backend = "tools/macos/backend/openwrt-backend";
@@ -178,6 +204,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let backend = "tools/backend/openwrt-backend.exe";
             let mut process = Command::new(root.join(backend));
             process.args(["--package-root", &root.to_string_lossy(), "--data-dir", &setup_state.directory.to_string_lossy()]);
+            process.current_dir(&root);
             process.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
             #[cfg(windows)] { use std::os::windows::process::CommandExt; process.creation_flags(0x08000000); }
             match process.spawn() {
@@ -214,8 +241,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = child.wait();
                     });
                 }
-                Err(_) => {
-                    rfd::MessageDialog::new().set_title("OpenWrt Installer").set_description("Backend is missing. Extract the complete package, including tools/backend.\n后端缺失，请完整解压安装包（含 tools/backend 目录）。").set_level(rfd::MessageLevel::Error).show();
+                Err(error) => {
+                    let message = format!("Cannot start the installer backend / 无法启动安装器后端：\n{}\n\n{error}\n\nKeep the complete extracted package together. Check the file exists and is allowed to run.\n请保留完整解压目录，并确认该文件存在且允许运行。", root.join(backend).display());
+                    rfd::MessageDialog::new().set_title("OpenWrt Installer").set_description(&message).set_level(rfd::MessageLevel::Error).show();
                 }
             }
             Ok(())

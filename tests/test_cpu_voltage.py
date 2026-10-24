@@ -39,6 +39,8 @@ class CpuVoltage(unittest.TestCase):
         init=(APP/'root/etc/init.d/unisoc-cpu').read_text()
         self.assertIn('shutdown()',init)
         self.assertNotIn('stop()',init)
+        self.assertIn('cpu-voltage confirm', init)
+        self.assertIn('START=99', init)
 
     @unittest.skipUnless(shutil.which('ucode') and shutil.which('jsonfilter'), 'requires OpenWrt ucode/jsonfilter; also run cpu_voltage_fixture.sh in the OpenWrt container')
     def test_isolated_profiles(self):

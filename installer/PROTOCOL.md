@@ -1,5 +1,11 @@
 # Installer protocol and recovery contract
 
+## Diff Studio version indexes
+
+`ota_analyze {old,new}` and `ota_export {output}` return an optional `index_path` after a compatible analysis. Old input may be a complete release or a validated version-1 `openwrt-release-index` JSON; new input must remain complete. The index captures the generated target descriptors, not an installation receipt. `ota_export_index {output}` copies only the coordinator's last successful cached index, refusing existing destinations and stale/failed analysis state. No device operation is involved.
+
+Native `pick_ota_input {kind:"old"}` permits ZIP/JSON selection; other input kinds retain ZIP/OTA filtering. `save_index` selects an export destination, and `open_index_data` opens the fixed application-data `release-indexes` directory. No arbitrary shell or opener target is accepted.
+
 The canonical implementation is `e5-linux/installer`. `sync.py <mu300-repository>` generates the other repository's mirror and `SHARED-SOURCE.json`. Edit the canonical source, synchronize, and run `--check`. Do not independently maintain two frontends/state machines. Both builds use the same Tauri executable and backend; repository-specific behavior is in `backend/adapter.py` and the existing Python/device scripts.
 
 Protocol 1: one JSON object per line on stdin/stdout. A request is `{"protocol":1,"id":1,"command":"hello","params":{}}`. Responses contain the same `id`, `type:"response"` and `data:{ok,result}` or `{ok:false,error}`. Events use `type:"transaction"`, `"transfer"`, `"log"`. No terminal-text matching. Legacy stdout/stderr becomes sanitized diagnostic log events, independently of named state/effect callbacks.

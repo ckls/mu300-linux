@@ -6,20 +6,22 @@
 
 安装前备份重要文件，确认安装包适用于你的机型，并保持设备稳定供电。在 Android 中开启 USB 调试，允许这台电脑调试，并准备好 Magisk/root。
 
+E5 系列不要求预先解锁 BL；仍需允许 ADB 调试并取得 root 权限。
+
 MU300 系列在 Windows 通过有线 ADB 检查设备时，安装器会自动禁用该设备的 MTP 文件传输接口并显示通知，以避开原厂 USB 冲突。ADB、USB 网卡和串口保持启用，MTP 不会自动恢复。禁用失败只提示，不中断安装。无额外安装器确认步骤；Windows 可能请求管理权限。无线 ADB、macOS 和 E5 系列跳过处理。
 
 只有无线 ADB 时，先将电脑连接到设备所在网络，展开设备选择区的“无线 ADB 连接”，填写 `192.168.0.1` 并点击“连接”。地址或端口不同请填写实际值，例如 `192.168.0.1:5555`。设备需已开启无线 ADB；Android 要求配对时，先按设备提示完成配对。
 
 也可手动运行 `adb connect 192.168.0.1`。Windows 可在安装包目录打开 PowerShell，运行 `.\tools\adb.exe connect 192.168.0.1`。
 
-Apple Silicon Mac 请打开完整解压目录中的 **OpenWrt-Installer.app**，保留相邻的 `tools`、`files` 等目录，无需另装 Python、Node 或 Rust。如果 macOS 阻止打开，请确认安装包来源后，在“系统设置 → 隐私与安全性”中允许打开。若安装器要求选择目录，请选择完整解压的安装包文件夹。
+Apple Silicon Mac 请打开完整解压目录中的 **OpenWrt-Installer.app**，保留相邻的 `tools`、`files` 等目录，无需另装 Python、Node 或 Rust。不要只把 APP 拖到“应用程序”目录。如果 macOS 阻止打开，请确认安装包来源后，在“系统设置 → 隐私与安全性”中允许打开。若提示找不到安装包，请选择完整解压、同时包含 APP 和 `tools` 的安装包目录；缺少文件时请重新完整解压。选错目录可以重新选择，取消则退出安装器。
 
 Linux、Intel Mac 或需要 Python 命令行入口时，可使用 **OpenWrt-Installer.py**，需另行安装 Python 和依赖。Apple Silicon Mac 的 `launchers/start-installer.sh` 可直接使用随包命令行后端。使用 Magisk 安装时，直接选择完整 ZIP；这会部署到 TF 卡并清空选定目标，请先备份卡内数据。
 
 ### 选择用途
 
 - **安装 OpenWrt**：首次安装到 TF 卡或独立内置分区。校验安装包，选择设备并检查，然后核对安装计划。
-- **更新 OpenWrt**：保留已有设置和容量更新系统。设备需运行 OpenWrt，电脑需连接它的网络，并提供管理地址和 SSH root 密码。
+- **更新 OpenWrt**：仅支持相同内核、相同 OpenWrt 系统版本的更新，保留已有设置和容量。**不支持跨内核、跨 OpenWrt 系统版本升级；如需更换，请先备份重要数据，再重新安装。**设备需运行 OpenWrt，电脑需连接它的网络，并提供管理地址和 SSH root 密码。
 - **继续未完成的安装**：选择原安装记录，接着完成中断的安装或 Android 重置后的续装。
 - **临时启动已安装的 OpenWrt**：从 Android 切换到已安装的 OpenWrt，仅本次启动生效，不会设为默认系统。完成后按提示重启。
 - **高级选项**：重装已有内置分区，或使用 userdata 镜像。重装会替换原 OpenWrt 系统和设置，保留 Android。**userdata 镜像是实验性功能，可能损坏 Android F2FS 文件系统**，建议优先选择 TF 卡或独立内置分区。
@@ -65,6 +67,12 @@ Linux、Intel Mac 或需要 Python 命令行入口时，可使用 **OpenWrt-Inst
 更新提交后设备会自动重启，期间网络暂时断开。保持供电，等待安装器重新连接并校验。**不要因为重启期间连接不上而重新执行更新。**
 
 若设备已经开机却一直等待，请核对电脑连接的设备网络、管理地址和密码，然后点击“我已进入 OpenWrt，开始校验”。地址或密码改过时，填写实际值。
+
+#### Diff Studio：保存与复用版本摘要
+
+Diff Studio 的旧版输入可选择完整 ZIP，也可选择之前保存的 `.owrt-index.json` 版本摘要；新版仍须选择完整 ZIP。分析通过后会自动保存新版摘要，结果区可“导出版本摘要”，左侧可“打开版本摘要目录”。摘要按版本分别保留，不需要保留旧版大包也能生成下一次差异包。
+
+请选择与设备实际安装版本对应的旧包或摘要。保存摘要不代表设备已经完成更新；摘要不含系统文件，不能代替新版安装包或用于刷机。
 
 ### 卸载内置 OpenWrt 并归还空间
 
@@ -138,20 +146,22 @@ Extract the complete package and run **OpenWrt-Installer.exe** at its root. Keep
 
 Back up important files, check that the package matches your model and keep the device powered. Enable USB debugging in Android, authorize this computer and have Magisk/root ready.
 
+E5-family installation does not require prior bootloader unlocking. Authorized ADB debugging and root access are still required.
+
 For MU300-series devices checked over wired ADB on Windows, the installer automatically disables only that device's MTP interface and displays a notification, avoiding the stock USB conflict. ADB, USB networking and serial interfaces stay enabled; MTP is not re-enabled. Failure only shows a warning and does not interrupt installation. There is no extra installer confirmation; Windows may request administrator permission. Wireless ADB, macOS and the E5 adapter skip this workaround.
 
 For wireless ADB only, connect the computer to the device’s network, expand Wireless ADB connection, enter `192.168.0.1` and select Connect. Use the actual address and port if different, for example `192.168.0.1:5555`. Wireless ADB must already be enabled. If Android requires pairing, complete it on the device first.
 
 Alternatively, manually run `adb connect 192.168.0.1`. On Windows, open PowerShell in the package folder and run `.\tools\adb.exe connect 192.168.0.1`.
 
-On an Apple Silicon Mac, open **OpenWrt-Installer.app** in the fully extracted package. Keep the adjacent `tools`, `files` and other folders. No Python, Node or Rust installation is needed. If macOS blocks it, verify the package source, then allow it in System Settings → Privacy & Security. If the installer asks for a folder, select the fully extracted package directory.
+On an Apple Silicon Mac, open **OpenWrt-Installer.app** in the fully extracted package. Keep the adjacent `tools`, `files` and other folders; do not move just the APP to Applications. No Python, Node or Rust installation is needed. If macOS blocks it, verify the package source, then allow it in System Settings → Privacy & Security. If the package cannot be found, select the fully extracted folder containing both the APP and `tools`. Extract the entire archive again if files are missing. An incorrect selection can be retried; Cancel closes the installer.
 
 For Linux, Intel Macs or the Python command-line entry, run **OpenWrt-Installer.py** with Python and its dependencies installed. On Apple Silicon, `launchers/start-installer.sh` uses the bundled command-line backend directly. To install through Magisk, select the complete ZIP. This installs to the TF card and erases the selected target, so back up the card first.
 
 ### Choose your purpose
 
 - **Install OpenWrt**: install to a TF card or an independent internal partition. Verify the package, select and inspect the device, then review the plan.
-- **Update OpenWrt**: update while keeping settings and capacity. OpenWrt must be running, and the computer must be connected to its network. Enter its management address and SSH root password.
+- **Update OpenWrt**: update only with matching kernel and OpenWrt system versions, keeping settings and capacity. **Updates across kernels or OpenWrt system versions are not supported; back up important data and reinstall to change either.** OpenWrt must be running, and the computer must be connected to its network. Enter its management address and SSH root password.
 - **Continue an unfinished installation**: select the original record to resume an interrupted installation or continue after an Android reset.
 - **Boot installed OpenWrt once**: switch from Android to the installed OpenWrt for one boot, without changing the default system. Restart when prompted.
 - **Advanced options**: reinstall an existing internal partition or use a userdata image. Reinstallation replaces OpenWrt and its settings while keeping Android. **Userdata image installation is experimental and may damage Android F2FS.** Prefer a TF card or an independent internal partition.
@@ -191,6 +201,12 @@ Connect the computer to the intended OpenWrt device’s USB network or hotspot. 
 After submission, the device restarts automatically and the network disconnects briefly. Keep it powered and wait for reconnection and verification. **Do not start another update because the device is unreachable during restart.**
 
 If the device has started but the installer keeps waiting, check the connected network, address and password, then select OpenWrt is running — verify now. Use the actual address and password if they have changed.
+
+#### Diff Studio: save and reuse version indexes
+
+The old input accepts a full ZIP or a previously saved `.owrt-index.json` version index. The new input still requires a full ZIP. Successful analysis automatically saves the new version index. Use Export version index in the results or Open version index folder on the left. Versions are retained separately, so the old full package is no longer needed for the next comparison.
+
+Choose the old package or index matching the version actually installed on the device. Saving an index does not mean an update has completed. Indexes contain no system file contents and cannot replace the new package or be flashed.
 
 ### Remove internal OpenWrt and return space
 

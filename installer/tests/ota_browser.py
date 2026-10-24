@@ -18,10 +18,13 @@ window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebvie
  if(cmd==='plugin:event|listen'){listeners.set(++eventId,args);return eventId;}
  if(cmd==='plugin:event|unlisten'){listeners.delete(args.eventId);return;}
  if(cmd==='pick_ota_input')return window.selectedFile||(++picked===1?'D:/Releases/old.zip':'D:/Releases/new.zip');
+ if(cmd==='save_index')return window.cancelIndex?null:'D:/Saved/new.owrt-index.json';
+ if(cmd==='open_index_data'){window.indexOpened=(window.indexOpened||0)+1;return;}
  if(cmd==='save_ota'){window.saveArgs=args;return window.cancelSave?null:(window.manualOutput||'D:/Releases/update.ota');}
  const command=args?.command;
  if(command==='ota_package'){if(window.packageError)throw Error(window.packageError);if(window.badPackage)throw Error('Invalid selected patch');return {path:'D:/Releases/update.ota',manifest};}
- if(command==='ota_analyze'){window.analyzeArgs=args.params;return {suggested_name:'OpenWrt-patch-T551M-25.12.5-k6.18.54-20261019.170725-g11111111-to-20261020.180000-g22222222.zip',manifest:window.testBlocked?{...manifest,operations:Array.from({length:180},(_,i)=>({path:`usr/lib/example/changed-file-${i}.js`,before:{},after:{}}))}:manifest,blockers:window.testBlocked?Array.from({length:12},(_,i)=>`Core runtime/module/updater changed; use the full installer: usr/lib/unisoc-ota/changed-file-${i}.py`):[],can_export:!window.testBlocked,payload_bytes:53720,files:window.testBlocked?180:1,added:0,removed:0};}
+ if(command==='ota_analyze'){window.analyzeArgs=args.params;return {suggested_name:'OpenWrt-patch-T551M-25.12.5-k6.18.54-20261019.170725-g11111111-to-20261020.180000-g22222222.zip',manifest:window.testBlocked?{...manifest,operations:Array.from({length:180},(_,i)=>({path:`usr/lib/example/changed-file-${i}.js`,before:{},after:{}}))}:manifest,blockers:window.testBlocked?Array.from({length:12},(_,i)=>`Core runtime/module/updater changed; use the full installer: usr/lib/unisoc-ota/changed-file-${i}.py`):[],can_export:!window.testBlocked,payload_bytes:53720,files:window.testBlocked?180:1,added:0,removed:0,index_path:window.testBlocked?undefined:'D:/App Data/release-indexes/new.owrt-index.json'};}
+ if(command==='ota_export_index'){window.indexExport=args.params.output;return {path:args.params.output};}
  if(command==='ota_export'){window.exportArgs=args.params;return {output:args.params.output};}
  if(command==='ota_probe')return {token:'reviewed',check:{applicable:!window.testConflict,conflicts:window.testConflict?['usr/libexec/unisoc-modem/action']:[],package_conflicts:[],required_bytes:20000000,free_bytes:1000000000}};
  if(command==='ota_apply'){window.autoRebootRequested=args.params.auto_reboot;return {status:'running'};}
@@ -122,6 +125,40 @@ async def check_drag_and_names(page):
     assert await page.get_by_role('button',name='导出差异包').count()==0,'Replacing a release kept stale analysis'
 
 
+async def check_release_indexes(page):
+    await page.goto(ORIGIN+'/diff.html')
+    await page.get_by_role('button',name='打开版本摘要目录').click()
+    assert await page.evaluate('window.indexOpened')==1
+    await drop_file(page,'old',['D:/Saved/上次更新.owrt-index.json'])
+    await drop_file(page,'new',['D:/Releases/new.zip'])
+    await page.get_by_role('button',name='分析差异').click()
+    await page.get_by_text('新版版本摘要已自动保存',exact=True).wait_for()
+    assert await page.evaluate('window.analyzeArgs.old')=='D:/Saved/上次更新.owrt-index.json'
+    assert '不代表设备已完成更新' in await page.locator('.ota-index').inner_text()
+    await page.set_viewport_size({'width':800,'height':650})
+    await page.get_by_role('button',name='导出版本摘要',exact=True).scroll_into_view_if_needed()
+    assert await page.evaluate('document.documentElement.scrollHeight<=innerHeight')
+    assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+    await page.get_by_role('button',name='Theme',exact=True).click()
+    await page.screenshot(path=str(Path(__file__).resolve().parents[2]/'work/diff-index-preview.png'),animations='disabled')
+    await page.set_viewport_size({'width':1120,'height':860})
+    await page.evaluate('window.cancelIndex=true')
+    await page.get_by_role('button',name='导出版本摘要',exact=True).click()
+    assert await page.evaluate('window.indexExport||null') is None
+    await page.evaluate('window.cancelIndex=false')
+    await page.get_by_role('button',name='导出版本摘要',exact=True).click()
+    await page.get_by_role('status').filter(has_text='版本摘要已导出').wait_for()
+    assert await page.evaluate('window.indexExport')=='D:/Saved/new.owrt-index.json'
+    await drop_file(page,'new',['D:/Saved/wrong.json'])
+    await page.get_by_role('alert').filter(has_text='新版必须选择完整 ZIP').wait_for()
+    assert 'new.zip' in await page.locator('[data-ota-drop="new"]').inner_text()
+    await page.get_by_role('button',name='English',exact=True).click()
+    assert 'New version index saved automatically' in await page.locator('.ota-index').inner_text()
+    await page.get_by_role('button',name='中文',exact=True).click()
+    await drop_file(page,'new',['D:/Releases/replacement.zip'])
+    await page.locator('.ota-index').wait_for(state='detached')
+
+
 async def main():
     async with async_playwright() as p:
         browser=await p.chromium.launch(headless=True)
@@ -129,11 +166,11 @@ async def main():
         await page.add_init_script(BRIDGE)
         errors=[]
         page.on('pageerror',lambda e:errors.append(str(e)))
+        await check_release_indexes(page)
         await check_drag_and_names(page)
         await page.goto(ORIGIN+'/diff.html')
         await check_footer_spacing(page)
-        choices=page.get_by_role('button',name='选择 ZIP 文件')
-        await choices.nth(0).click();await choices.nth(0).click()
+        await page.locator('[data-ota-drop="old"]').click();await page.locator('[data-ota-drop="new"]').click()
         await page.get_by_role('button',name='分析差异').click()
         await page.get_by_role('button',name='导出差异包').wait_for()
         await page.get_by_role('button',name='导出差异包').click()

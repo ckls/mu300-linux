@@ -32,27 +32,81 @@ test "$(call boot-args)" = '-3125,0,6250'
 test -f "$base/etc/cpu-voltage-armed.json"
 # Repeating startup cannot apply an offset twice.
 test "$(call boot-args)" = '0,0,0'
-# Reset while running must not erase the crash guard.
+# Readback must match all domains before startup is confirmed.
+if call confirm > "$base/out"; then echo 'confirmed wrong voltage'; exit 1; fi
+test "$(check "$(cat "$base/etc/cpu-voltage-armed.json")" '@.phase')" = pending
+printf '%s\n' -3125 > "$base/sys/policy0/scaling_voltage_offset"
+printf '%s\n' 6250 > "$base/sys/policy2/scaling_voltage_offset"
+call confirm > "$base/out"
+test "$(check "$(cat "$base/etc/cpu-voltage-armed.json")" '@.phase')" = confirmed
+test "$(call boot-args)" = '0,0,0'
+# F50/V50 unplug: no shutdown action is invoked, and settings survive.
+printf 'boot-two\n' > "$base/boot"
+test "$(call boot-args)" = '-3125,0,6250'
+# Even a subsequent power loss before S99 keeps this already confirmed profile.
+printf 'boot-three\n' > "$base/boot"
+test "$(call boot-args)" = '-3125,0,6250'
+# A new, unconfirmed profile is paused after an interrupted first boot.
+printf '{"offsets":[0,3125,0]}' | call save > "$base/out"
+printf 'boot-four\n' > "$base/boot"
+test "$(call boot-args)" = '0,3125,0'
+printf 'boot-five\n' > "$base/boot"
+for d in 0 1 2; do printf '0\n' > "$base/sys/policy$d/scaling_voltage_offset"; done
+test "$(call boot-args)" = '0,0,0'
+test -f "$base/etc/cpu-voltage.json"
+test ! -e "$base/etc/cpu-voltage.json.rejected"
+out=$(call get)
+test "$(check "$out" '@.recovery')" = boot_unconfirmed
+# Further power loss cannot retry the paused profile without explicit saving.
+printf 'boot-six\n' > "$base/boot"
+test "$(call boot-args)" = '0,0,0'
+call shutdown > "$base/out"
+printf 'boot-seven\n' > "$base/boot"
+test "$(call boot-args)" = '0,0,0'
+# Explicit retry is accepted only after observed default-voltage boot.
+printf '%s\n' -3125 > "$base/sys/policy0/scaling_voltage_offset"
+printf '{"offsets":[0,3125,0]}' | call save > "$base/out"
+test "$(check "$(cat "$base/etc/cpu-voltage-armed.json")" '@.phase')" = paused
+printf '0\n' > "$base/sys/policy0/scaling_voltage_offset"
+printf '{"offsets":[0,3125,0]}' | call save > "$base/out"
+test ! -e "$base/etc/cpu-voltage-armed.json"
+test "$(call boot-args)" = '0,3125,0'
+printf '3125\n' > "$base/sys/policy1/scaling_voltage_offset"
+call shutdown > "$base/out"
+test "$(check "$(cat "$base/etc/cpu-voltage-armed.json")" '@.phase')" = confirmed
+printf 'boot-eight\n' > "$base/boot"
+test "$(call boot-args)" = '0,3125,0'
+# Pending save of different offsets is not discarded with an older trial.
+printf '{"offsets":[3125,0,0]}' | call save > "$base/out"
+printf 'boot-nine\n' > "$base/boot"
+test "$(call boot-args)" = '3125,0,0'
+printf '{"offsets":[6250,0,0]}' | call save > "$base/out"
+printf 'boot-ten\n' > "$base/boot"
+test "$(call boot-args)" = '6250,0,0'
+# Legacy lifetime guard migrates without declaring an unplug to be a crash.
+printf '{"boot":"old-version","offsets":[6250,0,0]}' > "$base/etc/cpu-voltage-armed.json"
+printf 'boot-eleven\n' > "$base/boot"
+test "$(call boot-args)" = '6250,0,0'
+printf '6250\n' > "$base/sys/policy0/scaling_voltage_offset"
+printf '0\n' > "$base/sys/policy1/scaling_voltage_offset"
+call confirm > "$base/out"
+# Saving factory values while an offset runs preserves its evidence until boot.
 printf '{"offsets":[0,0,0]}' | call save > "$base/out"
 test -f "$base/etc/cpu-voltage-armed.json"
-call shutdown > "$base/out"
-test ! -e "$base/etc/cpu-voltage-armed.json"
-printf '{"offsets":[-3125,0,0]}' | call save > "$base/out"
-test "$(call boot-args)" = '-3125,0,0'
-# Simulate an unclean boot, reject persisted voltage and never retry it.
-printf 'boot-two\n' > "$base/boot"
+printf 'boot-defaults\n' > "$base/boot"
 test "$(call boot-args)" = '0,0,0'
-test -f "$base/etc/cpu-voltage.json.rejected"
-test ! -e "$base/etc/cpu-voltage.json"
-out=$(call get)
-test "$(check "$out" '@.recovery')" = unclean_shutdown
-# A clean shutdown preserves a saved profile across boots.
-printf '{"offsets":[0,3125,0]}' | call save > "$base/out"
-test "$(call boot-args)" = '0,3125,0'
-call shutdown > "$base/out"
-printf 'boot-three\n' > "$base/boot"
-test "$(call boot-args)" = '0,3125,0'
-call shutdown > "$base/out"
+test ! -e "$base/etc/cpu-voltage-armed.json"
+printf '{"offsets":[6250,0,0]}' | call save > "$base/out"
+test "$(call boot-args)" = '6250,0,0'
+# Corrupt records fail closed without erasing the saved user profile.
+printf '{bad' > "$base/etc/cpu-voltage-armed.json"
+printf 'boot-twelve\n' > "$base/boot"
+test "$(call boot-args)" = '0,0,0'
+test "$(check "$(call get)" '@.recovery')" = invalid_boot_record
+test -f "$base/etc/cpu-voltage.json"
+for d in 0 1 2; do printf '0\n' > "$base/sys/policy$d/scaling_voltage_offset"; done
+printf '{"offsets":[0,0,0]}' | call save > "$base/out"
+test ! -e "$base/etc/cpu-voltage-armed.json"
 # Unknown firmware may reset to defaults, but may not save/apply an offset.
 touch "$base/unsupported"
 if printf '{"offsets":[-3125,0,0]}' | call save > "$base/out"; then exit 1; fi
@@ -62,4 +116,4 @@ printf '{"offsets":[0,0,0]}' | call save > "$base/out"
 rm "$base/unsupported" "$base/sys/policy2/scaling_voltage_domain"
 if printf '{"offsets":[0,0,3125]}' | call save > "$base/out"; then exit 1; fi
 test ! -e "$base/etc/cpu-voltage-armed.json"
-echo "PASS voltage validation/gate/persistence/reset/clean+unclean recovery: $base"
+echo "PASS voltage validation/gate/confirmed unplug/unfinished trial/manual retry/legacy recovery: $base"

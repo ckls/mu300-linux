@@ -229,7 +229,7 @@ return view.extend({
         updatePending(voltage);
         pending.hidden = !(voltage.domains || []).length;
         if (!voltage.supported) section.append(node('p', M.translate('当前内核或固件不支持电压调整'), 'mud-note'));
-        if (voltage.recovery) section.append(node('p', M.translate('检测到异常关机，已停用上次的电压设置并恢复默认。'), 'mud-note'));
+        if (voltage.recovery) section.append(node('p', M.translate(voltage.recovery === 'invalid_boot_record' ? '电压启动记录损坏，已暂停自动应用；设置仍保留，重新保存可重试。' : '上次电压设置未完成启动确认，已使用默认电压；设置仍保留，重新保存可重试。'), 'mud-note'));
         (voltage.domains || []).forEach(function(d) {
             var card = node('div', null, 'mud-cpu-cluster'), input = node('input');
             input.type = 'number'; input.min = -50; input.max = 25; input.step = 3.125;
@@ -275,7 +275,7 @@ return view.extend({
         var save = node('button', M.translate('保存电压设置'), 'mud-btn on'), reset = node('button', M.translate('恢复默认电压'), 'mud-btn');
         save.disabled = !voltage.supported;
         var actions = node('div', null, 'mud-cpu-actions'); actions.append(pending, save, reset);
-        section.append(voltageGrid, actions, node('p', M.translate('调压可能导致死机或数据丢失，请从小幅调整开始。异常断电或重启后会停用电压配置；正常关机保留。保存不会立即调压或自动重启。'), 'mud-note mud-cpu-warning'));
+        section.append(voltageGrid, actions, node('p', M.translate('调压可能导致死机或数据丢失，请从小幅调整开始。完成启动确认后，直接断电会保留设置；首次应用未完成确认时暂停重试。保存不会立即调压或自动重启。'), 'mud-note mud-cpu-warning'));
         function submitVoltage(defaults) {
             if (self.busy) return;
             var values = [0, 0, 0];

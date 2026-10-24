@@ -4,9 +4,12 @@ START=99
 STOP=89
 start() {
     /usr/libexec/unisoc-modem/cpu boot | logger -t unisoc-cpu
+    # Boot reached S99 and voltage readback must match before confirming.
+    /usr/libexec/unisoc-modem/cpu-voltage confirm | logger -t unisoc-cpu-voltage
+    [ ! -f /etc/unisoc-modem/cpu-voltage-armed.json ] || sync
 }
 shutdown() {
-    # Only a real clean system shutdown disarms recovery, not service stop.
+    # Clean shutdown may confirm matching readback too. Service stop does not.
     /usr/libexec/unisoc-modem/cpu-voltage shutdown >/dev/null
     sync
 }

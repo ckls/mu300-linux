@@ -1,5 +1,13 @@
 # Building the desktop installer
 
+## Diff Studio version indexes
+
+Successful compatible analysis automatically writes a content-addressed `.owrt-index.json` under the application's `release-indexes` directory. The old input accepts a full release or this index; the new input still requires a complete release. The native old-file dialog starts in the index folder when it exists. Open-folder and export actions are available without assuming a device has been updated.
+
+`backend/release_index.py` defines format `openwrt-release-index`, version 1. The SHA-256 covers canonical family/version/kernel metadata, file descriptors (type, hash, size, permissions, ownership, links and xattrs), APK version/dependency records and the boot-image hash. No payload contents or device identifiers are saved. The baseline is captured after inserting the actual target updater files. Import validates paths, descriptors, format, duplicate fields, integrity and size.
+
+`analyze(..., index_directory=...)` opts into host persistence; GUI and CLI both use it. `ota_export_index` exports only the successfully analyzed cached index. Invalid or blocked analysis saves no new index and clears export state. Cache files are named by version/content, flushed and atomically published. The standalone assembler includes the module; no extra rootfs or dependency is added. User instructions are in GUIDE; see [verification](verification/diff-index-20261025.md).
+
 The shared sidebar credits installer author Minikano and provides four copy-number QQ buttons plus two fixed project links. E5 points to `https://github.com/sprd-linux-devs/e5-linux` (Enceka and Minikano), and MU300 points to `https://github.com/dikeckaan/mu300-linux` (dikeckaan and Minikano). Minikano is credited as co-author of both. Native `open_repository` accepts only the IDs `e5` and `mu300`, which map to those two literal URLs; it does not accept a URL or shell command.
 
 `ui/src/components/support.tsx` provides an optional donation notice on every application launch, followed by onboarding when applicable. Closing it lasts for that window only; older `support-notice-v1` acknowledgements are ignored. A labeled sidebar button reopens it. Both repository entries include a Lucide GitHub icon, and the dialog invites a Star through the same fixed-ID repository opener. Opening the page does not automatically star anything. Only the donation image host is added to CSP `img-src`; scripts and IPC/network command permissions remain restricted. Online loading uses a normal no-referrer image request, with a five-second timeout/error fallback to `ui/src/assets/donation-fallback.png`. The checked-in 613×514 PNG was downloaded from `https://api.kanokano.cn/pay/zsm.png` on 2026-10-15: 161,701 bytes, SHA-256 `22c0d03221750cfb7a8c59692ff0e7d7530e56b807fe731ed23522403ce99be3`. It is fingerprinted and embedded in the GUI release, not the device rootfs. To refresh it, download that exact source, inspect the image and update this provenance before rebuilding.
@@ -13,6 +21,8 @@ python installer/build.py
 ```
 
 ## Apple Silicon macOS and combined releases
+
+Package discovery accepts an explicitly selected extracted root, APP/Contents or payload directory, and a single archive wrapper. Ambiguous selections require a specific release; invalid selections can be retried and Cancel exits normally. Payload verification retains the existing hashes and model checks. The native resolver and retry/cancel loop have standalone Rust tests run by `tests/test_distribution_paths.py`; see [the regression report](verification/macos-path-discovery-20261025.md) for executed checks and macOS runtime limitations. New native source files must be included in `package_gui.sources()` so old artifacts are rejected.
 
 Run the same `python installer/build.py` on an Apple Silicon Mac with Xcode Command Line Tools, native ARM64 Python 3.12, Node 22 and Rust 1.90.0. Install the same Python build dependencies first. It creates `installer/artifacts/macos-arm64/OpenWrt-Installer.app`, `tools/macos/adb`, the private Python backend under `tools/macos/backend`, and a source/binary fingerprint manifest. macOS uses system WebKit, the native `open` command and `~/Library/Application Support/OpenWrt-Installer` for recovery records. The app locates either E5's `files/device-profile.json` or MU300's `desktop/manifest.json`; Finder translocation prompts for the extracted package folder. The macOS command-line launcher uses the same bundled backend, without a system Python dependency.
 

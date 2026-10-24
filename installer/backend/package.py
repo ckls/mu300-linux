@@ -13,8 +13,39 @@ def safe_file(root, name):
     return path
 
 
+def locate_package(directory):
+    """Normalize a user-selected root, APP or payload folder, never search CWD."""
+    selected = Path(directory).expanduser().resolve()
+    if not selected.is_dir():
+        raise ValueError('Select a fully extracted package folder, not a ZIP / 请选择完整解压的安装包目录，不能选择 ZIP: ' + str(selected))
+
+    def has_layout(root):
+        return (root/'desktop/manifest.json').is_file() or (root/'files/device-profile.json').is_file()
+
+    # An incomplete root is still this package: report its missing file rather
+    # than choosing another release nested inside it.
+    def is_package(root):
+        return has_layout(root) or (root/'OpenWrt-Installer.py').is_file()
+
+    if is_package(selected):
+        return selected
+    app = next((p for p in (selected, *selected.parents) if p.suffix.lower() == '.app'), None)
+    if app:
+        selected = app.parent
+    elif selected.name in ('files', 'desktop'):
+        selected = selected.parent
+    if is_package(selected):
+        return selected
+    candidates = [p for p in selected.iterdir() if p.is_dir() and has_layout(p)]
+    if len(candidates) == 1:
+        return candidates[0].resolve()
+    if candidates:
+        raise ValueError('Multiple OpenWrt packages found; select the exact release folder / 此目录包含多个安装包，请明确选择其中一个安装包目录')
+    raise ValueError('No extracted OpenWrt package found; select the folder containing OpenWrt-Installer.py and files or desktop / 未找到解压后的安装包，请选择包含 OpenWrt-Installer.py 和 files 或 desktop 的目录: ' + str(selected))
+
+
 def inspect_package(directory):
-    root = Path(directory).resolve()
+    root = locate_package(directory)
     mu = root / 'desktop/manifest.json'
     if mu.is_file():
         manifest = json.loads(mu.read_text(encoding='utf-8'))

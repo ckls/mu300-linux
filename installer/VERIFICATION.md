@@ -1,5 +1,9 @@
 # Windows installer verification — 2026-10-15
 
+Diff Studio version-index validation: [2026-10-25 report](verification/diff-index-20261025.md).
+
+Latest E5 BL-state preflight checks: [2026-10-25 report](verification/e5-bl-preflight-20261025.md).
+
 ## Wireless ADB Windows revision (2026-10-16)
 
 The device section connects a user-supplied TCP endpoint and disconnects only the selected observed wireless device. Actual enumeration determines connected/unauthorized/offline state; terminal wording is ignored. Connection is also available at safe Android setup/root waits without changing the saved device binding. Disconnect is blocked for an active worker and by the shared serial mutex if another installer process owns the transport. The endpoint validator rejects options and command text. No debugging enablement, pairing, device shell, ADB-server restart or network-adapter changes are performed.

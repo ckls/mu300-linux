@@ -2,5 +2,6 @@
 
 .dark .ota-error{color:#ffb4ab}.ota-error,.ota-versions,.ota-files{-webkit-user-select:text;user-select:text}
 .ota-picker.is-dragover:enabled{border-color:hsl(var(--primary));background:hsl(var(--primary)/.1);box-shadow:0 0 0 2px hsl(var(--primary)/.2)}
+.ota-index{margin:18px 0;padding:14px;border:1px solid hsl(var(--border));border-radius:10px;font-size:12px}.ota-index p{margin:6px 0;color:hsl(var(--muted-foreground))}.ota-index code{display:block;overflow-wrap:anywhere;user-select:text;-webkit-user-select:text;margin:8px 0}.ota-index>div{display:flex;gap:8px;flex-wrap:wrap}
 
 .ota-intro,.ota-notice{flex-shrink:0}.ota-notice{max-height:84px;overflow-y:auto}.ota-intro{margin-bottom:20px}@media(max-height:720px){.ota-main{padding-top:16px}.ota-intro h1{font-size:23px}.ota-intro p{font-size:12px;margin-top:8px}.ota-card{padding:16px}.ota-card h2{margin-bottom:14px}.ota-footer{margin-top:12px;padding:10px 0}}@media(max-width:680px){.ota-grid{grid-template-columns:1fr;grid-template-rows:repeat(2,minmax(0,1fr))}.ota-intro h1{font-size:21px}}

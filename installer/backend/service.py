@@ -102,7 +102,7 @@ class Service:
         self.verification_request = None
         self.verification_wake = threading.Event()
         from .ota_desktop import Desktop
-        self.ota = Desktop(self.package_root, self.emit)
+        self.ota = Desktop(self.package_root, self.emit, self.store.base)
 
     def emit(self, kind, data, request_id=None):
         event = {'protocol': 1, 'type': kind, 'data': data}
