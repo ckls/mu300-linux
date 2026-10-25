@@ -1,5 +1,8 @@
 # 本地构建与打包规范
 
+本机 Agent 的完整操作指南见 [AGENT-BUILD.zh-CN.md](AGENT-BUILD.zh-CN.md)。
+Windows/固件在本机完成；Apple Silicon App 可按用户授权使用上游 macOS CI 原生重编，下载后仍须通过源码指纹校验。
+
 本仓库维护分支为 `clean-tf-7.2`。不变更上游、分支及提交历史。
 本地任务统一走受版本控制的 `tools/build-release.py`；不得复制/执行旧的
 `work/` 日期 worker，或通过字符串替换拼接另一份发布流程。
@@ -15,7 +18,7 @@
 | 正式发布 | 仓库 `release/<task>/` |
 | 任务日志/状态 | `out/build-logs/<task>/`、`out/build-state/latest.json` |
 | 临时文件 | 工作区 `tmp/mu300-release-*`，单步结束自动删除 |
-| Windows/macOS 安装器 | `installer/artifacts/windows-x64`、`installer/artifacts/macos-arm64` |
+| Windows/macOS 安装器 | `installer/artifacts/windows`、`installer/artifacts/macos-arm64` |
 
 登记表显式引用当前已经存在的输入，包括相邻 `mu300-linux/work` 的固件/工具，
 以及本仓库旧安装包中的维护工具。它们尚未迁移，所以不能当成垃圾删除。

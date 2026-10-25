@@ -25,7 +25,7 @@
 
 # Local builds and release packaging
 
-- Read `docs/LOCAL-BUILD.zh-CN.md` before a local build or release. Use the
+- Read `docs/LOCAL-BUILD.zh-CN.md` and `docs/AGENT-BUILD.zh-CN.md` before a local build or release. Use the
   version-controlled `tools/build-release.py` entry point for task logging,
   workspace locking and release assembly. Never generate another release worker
   in `work/`, or execute/modify an old worker to assemble a new release.
