@@ -52,6 +52,24 @@ class DiffPackaging(unittest.TestCase):
             self.assertFalse(any('Installer' in n or n.startswith('files/') or 'adb' in n for n in names))
             self.assertEqual(names.count('update.ota'),1)
 
+    def test_export_restores_mac_execute_bits_from_windows_style_modes(self):
+        manifest=tool['attach'](self.root)
+        executable='OpenWrt-Diff-Studio.app/Contents/MacOS/openwrt-installer'
+        backend='tools/macos/backend/openwrt-backend'
+        library='tools/macos/backend/_internal/libpython-test.dylib'
+        path=self.root/library;path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_bytes(b'\xcf\xfa\xed\xfe library fixture')
+        manifest['files'][library]=hashlib.sha256(path.read_bytes()).hexdigest()
+        (self.root/'diff-tool.json').write_text(json.dumps(manifest))
+        for name in (executable,backend,library):(self.root/name).chmod(0o644)
+        patch=self.root.parent/'test.ota';patch.write_bytes(b'opaque fixture')
+        target=self.root.parent/'patch.zip';export_bundle(patch,target,self.root)
+        with zipfile.ZipFile(target) as z:
+            for name in (executable.replace('Diff-Studio','Updater'),backend,library):
+                self.assertEqual((z.getinfo(name).external_attr>>16)&0o777,0o755)
+            self.assertEqual(z.read(executable.replace('Diff-Studio','Updater')),(self.root/executable).read_bytes())
+            self.assertFalse((z.getinfo('OpenWrt-Updater.app/Contents/Info.plist').external_attr>>16)&0o111)
+
     def test_stale_native_and_duplicate_attachment_refused(self):
         (self.root/'tools/backend/openwrt-backend.exe').write_bytes(b'tampered')
         with self.assertRaisesRegex(ValueError,'native input mismatch'):tool['attach'](self.root)
@@ -59,6 +77,22 @@ class DiffPackaging(unittest.TestCase):
         (self.root/'tools/backend/openwrt-backend.exe').write_bytes(self.native['tools/backend/openwrt-backend.exe'])
         tool['attach'](self.root)
         with self.assertRaisesRegex(ValueError,'already exists'):tool['attach'](self.root)
+
+    def test_standalone_export_contains_complete_tool_without_firmware(self):
+        manifest=tool['attach'](self.root)
+        release=self.root.parent/'release.zip';output=self.root.parent/'standalone.zip'
+        with zipfile.ZipFile(release,'w') as z:
+            for path in self.root.rglob('*'):
+                if path.is_file():z.write(path,path.relative_to(self.root).as_posix())
+        tool['export_standalone'](release,output)
+        with zipfile.ZipFile(output) as z:
+            self.assertEqual(set(z.namelist()),set(manifest['files'])|{'diff-tool.json','START-HERE.md'})
+            for name,wanted in manifest['files'].items():
+                self.assertEqual(hashlib.sha256(z.read(name)).hexdigest(),wanted)
+            self.assertFalse(any('Installer' in name or 'adb' in name or name.startswith('files/') for name in z.namelist()))
+        self.assertTrue(Path(str(output)+'.sha256').is_file())
+        with self.assertRaisesRegex(ValueError,'existing packages'):
+            tool['export_standalone'](release,output)
 
 
 if __name__=='__main__':unittest.main()

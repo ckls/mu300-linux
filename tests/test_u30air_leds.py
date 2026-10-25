@@ -36,6 +36,38 @@ esac""")
     def led(self, shell, *args, **extra):
         return self.script(shell, BIN/'mu300-led', *args, **dict(self.extra, **extra))
 
+    def test_wifi_event_cannot_acknowledge_an_unapplied_battery_color(self):
+        for shell in self.each_shell():
+            state=self.root/'run/mu300/led'
+            (self.battery/'capacity').write_text('49\n')
+            self.apply(shell,'battery')
+            self.assertEqual(self.value('sc27xx:blue'),'255')
+            (self.battery/'capacity').write_text('50\n')
+            self.apply(shell,'wifi-on')
+            self.assertEqual(self.value('sc27xx:blue'),'255')
+            self.assertIn('battery blue:breathe:1\n',(state/'.tick-hint').read_text())
+            self.assertEqual(self.led(shell,'tick').returncode,0)
+            self.assertEqual(self.value('sc27xx:green'),'255')
+            self.assertIn('battery white:breathe:1\n',(state/'.tick-hint').read_text())
+
+    def test_sleep_clears_physical_wifi_without_a_desired_state_record(self):
+        for shell in self.each_shell():
+            (self.battery/'status').write_text('Discharging\n')
+            self.assertEqual(self.led(shell,'wake',TEST_TIMEOUT='60').returncode,0)
+            state=self.root/'run/mu300/led'
+            for lamp in ('zte-ldo1','zte-ldo2'):
+                (state/lamp).unlink(missing_ok=True)
+                (self.lamps/lamp/'brightness').write_text('1\n')
+            (self.root/'proc/uptime').write_text('161.00 0.00\n')
+            self.assertEqual(self.led(shell,'tick',TEST_TIMEOUT='60').returncode,0)
+            self.assertEqual(self.value('zte-ldo1'),'0')
+            self.assertEqual(self.value('zte-ldo2'),'0')
+            # A late hardware residue must also be cleared after the lease was consumed.
+            (self.lamps/'zte-ldo1'/'brightness').write_text('1\n')
+            self.assertEqual(self.led(shell,'tick',TEST_TIMEOUT='60').returncode,0)
+            self.assertEqual(self.value('zte-ldo1'),'0')
+            (self.root/'proc/uptime').write_text('100.00 0.00\n')
+
     def test_tick_hint_tracks_timeout_charge_bucket_and_unplug(self):
         for shell in self.each_shell():
             state=self.root/'run/mu300/led'

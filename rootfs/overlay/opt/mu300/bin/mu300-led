@@ -99,23 +99,17 @@ awake() {
 }
 # A deadline hint for sysd. Keep all board colours and physical writes here.
 tick_hint() {
-    local now due until cap status color mode marker=-
+    local now due until marker=-
     now=$(uptime_s); due=$((now + 600))
     until=$(rd "$STATE/.awake-until")
     case $until in ''|*[!0-9]*) ;; *)
         [ "$KEEP_LIT" = 1 ] || [ "$TIMEOUT" = 0 ] || [ "$until" -le "$now" ] || due=$until ;;
     esac
     if [ "$DEVICE" = u30air ]; then
-        local root=${MU300_POWER_SUPPLY_DIR:-$R/sys/class/power_supply}
-        cap=$(rd "$root/sc27xx-fgu/capacity"); status=$(rd "$root/sc27xx-fgu/status")
-        [ "$KEEP_LIT" != 0 ] || status=Discharging
-        case $cap in ''|*[!0-9]*) marker=unavailable ;; *)
-            color=white; [ "$cap" -ge 50 ] || color=blue
-            [ "$status" != Full ] || color=white
-            mode=steady
-            if [ "$status" = Charging ]; then mode=breathe; [ "$cap" -ge 10 ] || color=red; fi
-            marker=$color:$mode:$KEEP_LIT ;;
-        esac
+        # Only battery() knows which snapshot was actually applied. A Wi-Fi
+        # event or a capacity change during writes must not acknowledge a new
+        # battery colour before its channels have been reconciled.
+        marker=$(rd "$STATE/.battery-applied") || marker=unavailable
     fi
     mkdir -p "$STATE" || return 0
     (umask 077; printf 'due %s\nbattery %s\n' "$due" "$marker" > "$STATE/.tick-hint.new") &&
@@ -211,10 +205,10 @@ nap() { sleep "$1" 2>/dev/null || sleep 1; }   # (a busybox without fractional s
 
 battery() {
     [ "$DEVICE" = u30air ] || return 0
-    local root=${MU300_POWER_SUPPLY_DIR:-$R/sys/class/power_supply} cap status color channel value previous_power
+    local root=${MU300_POWER_SUPPLY_DIR:-$R/sys/class/power_supply} cap status color channel value previous_power marker mode
     cap=$(rd "$root/sc27xx-fgu/capacity")
-    case $cap in ''|*[!0-9]*) return 0 ;; esac
-    [ "$cap" -le 100 ] || return 0
+    case $cap in ''|*[!0-9]*) echo unavailable > "$STATE/.battery-applied"; return 0 ;; esac
+    [ "$cap" -le 100 ] || { echo unavailable > "$STATE/.battery-applied"; return 0; }
     status=$(rd "$root/sc27xx-fgu/status")
     # Charger online changes before the fuel-gauge status sometimes does.
     # A stale "Charging"/"Full" must not keep the charging indication alive.
@@ -239,6 +233,10 @@ battery() {
         value=0; [ "$channel" != "$color" ] || value=1
         if siren_running; then echo "$value" > "$STATE/$channel"; else set_led "$channel" "$value"; fi
     done
+    marker=white; [ "$color" != sc27xx:blue ] || marker=blue
+    [ "$color" != sc27xx:red ] || marker=red
+    mode=steady; [ "$status" != Charging ] || mode=breathe
+    printf '%s:%s:%s\n' "$marker" "$mode" "$KEEP_LIT" > "$STATE/.battery-applied"
     if [ "$KEEP_LIT" = 1 ] && [ "$previous_power" != 1 ] && ! siren_running; then show_all; fi
 }
 
@@ -304,9 +302,20 @@ case "$1 ${2:-}" in
         [ "$1" != tick ] || battery
         [ "$TIMEOUT" = 0 ] && exit 0
         if { [ "$1" = tick ] || [ "${2:-}" = --if-due ]; } && awake; then exit 0; fi
-        [ -e "$STATE/.awake-until" ] || { [ "$1" != tick ] && [ "${2:-}" != --if-due ]; } || exit 0
+        if [ "$DEVICE" != u30air ]; then
+            [ -e "$STATE/.awake-until" ] || { [ "$1" != tick ] && [ "${2:-}" != --if-due ]; } || exit 0
+        fi
         rm -f "$STATE/.awake-until"
-        for f in "$STATE"/*; do [ -f "$f" ] && write "${f##*/}" 0; done ;;
+        if [ "$DEVICE" = u30air ]; then
+            # Physical lamps can predate this process's desired-state files
+            # (boot handoff, a late driver or an interrupted refresh). Darken
+            # the entire board, including BOTH Wi-Fi LDOs, on every due tick.
+            for lamp in "$DATA" "$DATA5G" "$NODATA" "$WIFI5" "$WIFI24" $SIREN; do
+                write "$lamp" 0
+            done
+        else
+            for f in "$STATE"/*; do [ -f "$f" ] && write "${f##*/}" 0; done
+        fi ;;
     "alarm on")
         rm -f "$BOOT_STATE"
         siren_running && exit 0

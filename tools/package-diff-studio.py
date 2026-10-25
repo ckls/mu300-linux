@@ -7,10 +7,12 @@ Only Diff Studio's files enter diff-tool.json; no firmware/ADB/installer payload
 is included when the tool subsequently exports a patch updater.
 """
 import hashlib
+import copy
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import sys
+import zipfile
 
 TOP=Path(__file__).resolve().parents[1]
 SUPPORT=('__init__.py','ota_engine.py','ota_package.py','release_index.py','ota_desktop.py',
@@ -23,6 +25,49 @@ def digest(path):
     with path.open('rb') as stream:
         for block in iter(lambda:stream.read(1<<20),b''):h.update(block)
     return h.hexdigest()
+
+
+def export_standalone(release, output):
+    """Export only the verified tool files, retaining signed app contents/modes."""
+    output=Path(output)
+    if output.exists():
+        raise ValueError('Select a new output ZIP; existing packages are not overwritten')
+    with zipfile.ZipFile(release) as source:
+        if len(source.namelist())!=len(set(source.namelist())):
+            raise ValueError('Duplicate archive entries')
+        manifest=json.loads(source.read('diff-tool.json'))
+        files=manifest.get('files',{})
+        required={'OpenWrt-Diff-Studio.exe','OpenWrt-Diff-Studio.py',
+                  'OpenWrt-Diff-Studio.app/Contents/MacOS/openwrt-installer',
+                  'tools/backend/openwrt-backend.exe','tools/macos/backend/openwrt-backend'}
+        if manifest.get('protocol')!=1 or not required.issubset(files):
+            raise ValueError('Release does not contain a complete Diff Studio')
+        for name,wanted in files.items():
+            path=PurePosixPath(name)
+            if (path.is_absolute() or '..' in path.parts or '\\' in name or
+                (name not in required and not name.startswith(('backend/','tools/backend/',
+                 'tools/macos/backend/','OpenWrt-Diff-Studio.app/')))):
+                raise ValueError('Unexpected Diff Studio file: '+name)
+            with source.open(name) as stream:
+                hashed=hashlib.sha256()
+                for block in iter(lambda:stream.read(1<<20),b''):hashed.update(block)
+                if hashed.hexdigest()!=wanted:
+                    raise ValueError('Diff Studio checksum mismatch: '+name)
+        guide=source.read('docs/DIFF-STUDIO.md').decode('utf-8')
+        output.parent.mkdir(parents=True,exist_ok=True)
+        with zipfile.ZipFile(output,'x',compression=zipfile.ZIP_DEFLATED) as target:
+            for name in sorted(files):
+                with source.open(name) as src, target.open(copy.copy(source.getinfo(name)),'w',force_zip64=True) as dst:
+                    shutil.copyfileobj(src,dst,1<<20)
+            target.writestr('diff-tool.json',source.read('diff-tool.json'))
+            target.writestr('START-HERE.md',guide.replace('完整解压固件 ZIP','完整解压本工具 ZIP'))
+    with zipfile.ZipFile(output) as result:
+        if result.testzip():
+            raise ValueError('Standalone ZIP verification failed')
+    checksum=digest(output)
+    Path(str(output)+'.sha256').write_text(checksum+'  '+output.name+'\n',encoding='utf-8')
+    print(str(output)+'\nSHA256 '+checksum)
+    return manifest
 
 
 def attach(package):
@@ -78,9 +123,18 @@ def attach(package):
 if __name__=='__main__':
     import argparse
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--package',type=Path,required=True)
+    parser.add_argument('--package',type=Path)
     parser.add_argument('--prepare',action='store_true')
+    parser.add_argument('--from-release',type=Path)
+    parser.add_argument('--output-zip',type=Path)
     args=parser.parse_args()
+    if args.from_release or args.output_zip:
+        if not args.from_release or not args.output_zip or args.package or args.prepare:
+            parser.error('Use --from-release and --output-zip together without --package/--prepare')
+        export_standalone(args.from_release,args.output_zip)
+        sys.exit(0)
+    if not args.package:
+        parser.error('Supply --package or --from-release/--output-zip')
     args.package.mkdir(parents=True,exist_ok=True)
     if args.prepare:
         import runpy

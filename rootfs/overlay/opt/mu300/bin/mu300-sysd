@@ -305,7 +305,7 @@ function led_observe() {
         let color=+cap>=50?'white':'blue', mode='steady';
         if(st=='Full')color='white';
         if(st=='Charging') {mode='breathe';if(+cap<10)color='red';}
-        battery=digits(cap)?color+':'+mode+':'+(on=='1'?'1':'0'):'unavailable';
+        battery=digits(cap) && +cap<=100?color+':'+mode+':'+(on=='1'?'1':'0'):'unavailable';
     }
     return [battery,rd(LEDDIR+'/.awake-until'),rd(LEDDIR+'/.boot-chase'),
         rd(LEDDIR+'/.battery-breathe'),rd(R+'/run/mu300/led-siren.pid')];
@@ -315,7 +315,9 @@ function led_look() {
     if (led_ticking) { led_again = true; return; }
     led_hint_load();
     let observed=led_observe();
-    if(led_hint && now()<led_hint.due && sprintf('%J',observed)==led_seen) {led_arm();return;}
+    // The child may finish while capacity/power changes. Its hint records
+    // the applied snapshot, so never mark newer, unapplied input as handled.
+    if(led_hint && observed[0]==led_hint.battery && now()<led_hint.due && sprintf('%J',observed)==led_seen) {led_arm();return;}
     led_ticking = true;
     spawn(['mu300-led','tick'], () => {
         led_ticking = false;

@@ -96,5 +96,50 @@ Path(os.environ['SLACK_RESULT']).write_text(Path('/proc/self/timerslack_ns').rea
         self.assertEqual(p.returncode,0,p.stderr)
         self.assertNotEqual(int((self.base/'slack').read_text()),500000000)
 
+    def test_color_change_during_tick_is_not_acknowledged_by_completion(self):
+        psy=self.root/'sys/class/power_supply'
+        (psy/'sc27xx-fgu').mkdir(parents=True)
+        (psy/'bq256xx-charger').mkdir()
+        (psy/'sc27xx-fgu/capacity').write_text('49\n')
+        (psy/'sc27xx-fgu/status').write_text('Discharging\n')
+        (psy/'bq256xx-charger/online').write_text('0\n')
+        helper=self.stub('keys','''#!/usr/bin/python3
+import ctypes,os,time
+from pathlib import Path
+ctypes.CDLL(None).prctl(1,15)
+p=Path(os.environ['MU300_SYSROOT'])/'calls'
+while not p.exists():time.sleep(.02)
+time.sleep(.1)
+print('uevent power_supply',flush=True)
+time.sleep(60)
+''')
+        self.stub('mu300-led','''#!/usr/bin/python3
+import os,time
+from pathlib import Path
+root=Path(os.environ['MU300_SYSROOT']);p=root/'run/mu300/led';p.mkdir(exist_ok=True)
+cap=root/'sys/class/power_supply/sc27xx-fgu/capacity'
+color='white' if int(cap.read_text())>=50 else 'blue'
+now=int(float(Path('/proc/uptime').read_text().split()[0]))
+(p/'.tick-hint').write_text('due '+str(now+600)+'\\nbattery '+color+':steady:0\\n')
+calls=root/'calls'
+first=not calls.exists()
+with calls.open('a') as f:f.write(color+'\\n')
+if first:cap.write_text('50\\n')
+''')
+        env=dict(self.env,MU300_KEYS_BIN=str(helper),MU300_SYSD_PARTS='led',MU300_SYSD_LOG=str(self.base/'sysd.log'))
+        daemon=subprocess.Popen(['ucode',str(SYSD)],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        try:
+            deadline=time.monotonic()+10  # Production's first LED check is at five seconds.
+            while time.monotonic()<deadline:
+                if (self.root/'calls').exists() and len((self.root/'calls').read_text().splitlines())>=2:break
+                time.sleep(.05)
+            self.assertEqual((self.root/'calls').read_text().splitlines(),['blue','white'])
+            time.sleep(.7)
+            self.assertEqual((self.root/'calls').read_text().splitlines(),['blue','white'])
+        finally:
+            daemon.send_signal(signal.SIGTERM);_,err=daemon.communicate(timeout=5)
+            if (self.base/'sysd.log').exists():print((self.base/'sysd.log').read_text())
+            if err:print(err.decode())
+
 
 if __name__=='__main__':unittest.main()

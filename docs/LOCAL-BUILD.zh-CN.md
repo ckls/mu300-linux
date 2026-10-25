@@ -96,3 +96,14 @@ python3 tools/build-release.py add-diff --workspace /home/kano/openwrt-build --p
 ZIP 流式处理，不解压完整 rootfs。新工具纳入原 desktop manifest 和 CRC／SHA256 校验，
 每个发布包仍只有一份 boot、一份 rootfs 和各平台一份后端；最终通过才发布新目录。
 旧包不覆盖，失败现场按既有 clean-staging 规则处理。
+
+仅导出独立 Diff Studio（两个平台后端各一份，无 boot/rootfs/ADB）：
+
+```sh
+python3 tools/build-release.py run --workspace /home/kano/openwrt-build --label diff-standalone -- \
+  python3 tools/package-diff-studio.py --from-release /absolute/path/to/verified-release.zip \
+  --output-zip /absolute/repo/release/diff-studio/OpenWrt-Diff-Studio.zip
+```
+
+工具文件逐项按发布包内 `diff-tool.json` 核验，保留 Mac App 签名内容和可执行权限，
+不解压固件、不重新编译；输出 ZIP 与 SHA256，已有目标不覆盖。
