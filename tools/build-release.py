@@ -31,7 +31,16 @@ def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + '.new')
     temporary.write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
-    temporary.replace(path)
+    # Windows readers of a DrvFS status file can briefly deny its replacement.
+    # Keep publication atomic; retry sharing/access contention for at most 1 s.
+    for attempt in range(21):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt == 20:
+                raise
+            time.sleep(0.05)
 
 
 def layout(config, workspace, profiles, repo=TOP):

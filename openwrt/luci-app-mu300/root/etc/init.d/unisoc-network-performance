@@ -1,0 +1,7 @@
+#!/bin/sh /etc/rc.common
+# After normal sysctl defaults, before netifd creates interfaces. No resident worker.
+START=19
+start() {
+    [ -s /etc/unisoc-network-performance.json ] || return 0
+    /usr/libexec/unisoc-modem/network-performance boot | logger -t unisoc-network-performance
+}

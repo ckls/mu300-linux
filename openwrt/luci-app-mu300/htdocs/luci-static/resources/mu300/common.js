@@ -116,6 +116,8 @@ var callUsbNetAdd = rpc.declare({ object: 'mu300dash', method: 'usb_net_add', pa
  * standalone package works in any OpenWrt buildroot without po2lmo or extra
  * language packages. Chinese remains the source/fallback language. */
 var DASH_I18N = {
+	"AT 通道正忙，正在等待更新…": ["AT channel busy; waiting for an update…", "AT kanalı meşgul; güncelleme bekleniyor…"],
+	"模组尚未返回有效的实时信号": ["The modem has not returned valid live signal data", "Modem henüz geçerli canlı sinyal verisi döndürmedi"],
 	"另一项 TTL 操作正在执行，请稍后重试": ["Another TTL operation is running; please retry shortly", "Başka bir TTL işlemi çalışıyor; biraz sonra yeniden deneyin"],
 	"当前设置": ["Current setting", "Geçerli ayar"],
 	"固定为 %d": ["Fixed at %d", "%d olarak sabit"],
@@ -193,6 +195,12 @@ var DASH_I18N = {
 	"当前电量": ["Battery level","Pil seviyesi"],
 	"电池电流": ["Battery current", "Pil akımı"],
 	"正数充电，负数放电；显示电池净电流，不是 USB 输入电流。": ["Positive: charging; negative: discharging. Net battery current, not USB input current.", "Pozitif: şarj; negatif: deşarj. USB giriş akımı değil, net pil akımıdır."],
+	"充电": ["Charging", "Şarj"],
+	"放电": ["Discharging", "Deşarj"],
+	"USB供电": ["USB power", "USB gücü"],
+	"电池供电": ["Battery power", "Pil gücü"],
+	"供电来源未知": ["Unknown power source", "Bilinmeyen güç kaynağı"],
+	"功率和电流均为电池净值，不是 USB 输入值；充放电方向按电池电流判断。": ["Power and current are net battery values, not USB input. Direction follows battery current.", "Güç ve akım USB girişini değil, pilin net değerlerini gösterir. Yön pil akımına göre belirlenir."],
 	"充电状态": ["Charging status","Şarj durumu"],
 	"正在读取…": ["Reading…","Okunuyor…"],
 	"启用充电上限": ["Enable charge limit","Şarj sınırını etkinleştir"],
@@ -1370,6 +1378,21 @@ function fmtBatteryCurrent(ua) {
 	var ma = Math.round(ua / 1000);
 	return (ma > 0 ? '+' : '') + ma + 'mA';
 }
+function fmtBatterySummary(power) {
+	var p = power || {};
+	var current = typeof p.ua === 'number' && Number.isFinite(p.ua) ? p.ua : null;
+	var voltage = typeof p.volt === 'number' && Number.isFinite(p.volt) && p.volt > 0 ? p.volt : null;
+	var amps = current == null ? null : Math.abs(current) / 1000000;
+	// Net battery current determines direction even while connected to USB.
+	var state = current > 0 ? '充电' : current < 0 ? '放电' :
+		({ Charging: '充电', Discharging: '放电', Full: '已充满', 'Not charging': '未充电' }[p.status] || '未知');
+	var watts = amps != null && voltage != null ? (amps * voltage).toFixed(1) : '--';
+	var amperes = amps == null ? '--' : amps.toFixed(amps > 0 && amps < 0.01 ? 3 : 2);
+	var source = p.usb === true || p.usb === 1 ? 'USB供电' :
+		p.usb === false || p.usb === 0 ? '电池供电' : '供电来源未知';
+	return translate(state) + (uiLanguage() === 'zh' ? '' : ' ') + watts + 'W/' + amperes + 'A·' +
+		(voltage == null ? '--' : voltage.toFixed(2)) + 'V·' + translate(source);
+}
 function fmtBytes(b) {
 	if (b == null || isNaN(b)) return '--';
 	var u = [ 'B', 'KB', 'MB', 'GB', 'TB' ], i = 0;
@@ -1922,7 +1945,7 @@ return baseclass.extend({
 	callTtlGet: callTtlGet, callTtlSet: callTtlSet, callUsbGet: callUsbGet, callUsbSet: callUsbSet,
 	callUsbNetList: callUsbNetList, callUsbNetAdd: callUsbNetAdd,
 	carrierName: carrierName, qLabel: qLabel, qCol: qCol, qScore: qScore,
-	esc: esc, fmtBatteryCurrent: fmtBatteryCurrent, fmtBytes: fmtBytes, fmtTrafficBytes: fmtTrafficBytes, fmtRate: fmtRate, fmtUptime: fmtUptime, PLMN_CN: PLMN_CN,
+	esc: esc, fmtBatteryCurrent: fmtBatteryCurrent, fmtBatterySummary: fmtBatterySummary, fmtBytes: fmtBytes, fmtTrafficBytes: fmtTrafficBytes, fmtRate: fmtRate, fmtUptime: fmtUptime, PLMN_CN: PLMN_CN,
 	uiLanguage: uiLanguage, translate: translate, localize: localize, localizeMenu: localizeMenu,
 	injectCss: injectCss, v: v, set: set, spark: spark, neighborRows: neighborRows,
 	toast: toast, busy: busy, confirmBox: confirmBox, alertBox: alertBox, choiceBox: choiceBox,

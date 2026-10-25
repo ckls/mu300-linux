@@ -44,6 +44,9 @@
         ],
         "mu300.modem": [
           "signal"
+        ],
+        "unisoc-network-performance": [
+          "get"
         ]
       },
       "uci": {
@@ -65,6 +68,9 @@
           "full_once",
           "pause",
           "resume"
+        ],
+        "unisoc-network-performance": [
+          "apply"
         ]
       },
       "uci": {

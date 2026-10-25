@@ -395,11 +395,11 @@ return view.extend({
 		return timer;
 	},
 
-	loading: function(part, pending, failed) {
+	loading: function(part, pending, failed, notice) {
 		var el = this.Q(part + '-progress');
 		if (!el || this._disposed) return;
 		el.classList.toggle('is-loading', !!pending && !failed);
-		el.textContent = M.translate(failed ? '读取失败，稍后重试' : pending ? '正在更新…' : '');
+		el.textContent = M.translate(notice || (failed ? '读取失败，稍后重试' : pending ? '正在更新…' : ''));
 		el.title = el.textContent;
 	},
 
@@ -434,8 +434,14 @@ return view.extend({
 		this.loading('serving', true);
 		this._signalRequest = M.callSignal().then(function(live) {
 			if (self._disposed || (self._root && !self._root.isConnected) || document.hidden) return;
+			if (live && (live.busy || live.error === 'busy')) {
+				self.loading('serving', true, false, 'AT 通道正忙，正在等待更新…'); return;
+			}
 			if (!live || live.error || !live.ts) {
-				self.loading('serving', false, true); return;
+				self.loading('serving', false, true);
+				var progress = self.Q('serving-progress');
+				if (progress) progress.title = live && live.error ? M.translate(live.error) : M.translate('模组尚未返回有效的实时信号');
+				return;
 			}
 			self.liveSignal = live;
 			self.paintServing(Object.assign({}, self.servingMeta || {}, live));

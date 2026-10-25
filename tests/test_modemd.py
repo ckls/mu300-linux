@@ -734,6 +734,21 @@ class ModemdUbus(Base):
         self.assertIn('error',self.ubus('call','mu300.modem','signal','{"slot":"1"}'))
         self.assertEqual(self.bridge.tx,[])
 
+    def test_live_signal_accepts_http_session_metadata_but_not_business_extras(self):
+        self.start();self.ready();self.wait_object();self.bridge.tx.clear()
+        args={'slot':'0','ubus_rpc_session':'a'*32}
+        result=self.ubus('call','mu300.modem','signal',json.dumps(args))
+        self.assertEqual(result['sig_src'],'nr')
+        self.assertTrue(result['ts'])
+        self.assertNotIn('ubus_rpc_session',result)
+        self.bridge.tx.clear()
+        args['slot']='2'
+        self.assertEqual(self.ubus('call','mu300.modem','signal',json.dumps(args))['error'],'invalid SIM slot')
+        args.update(slot='0',unexpected='not-allowed')
+        rejected=subprocess.run([UBUS,'-s',str(self.ubus_sock),'call','mu300.modem','signal',json.dumps(args)],capture_output=True,text=True)
+        self.assertNotEqual(rejected.returncode,0)
+        self.assertEqual(self.bridge.tx,[])
+
     def test_live_signal_mux_change_returns_error_and_cleans_locks(self):
         epoch=self.tmp/'epoch';epoch.write_text('1')
         self.table['AT+CFUN?']=[0.5,'+CFUN: 1','OK']

@@ -31,7 +31,7 @@ def main():
                         page.add_style_tag(content=f'html{{{variables}}}body{{margin:0;padding:12px;font-family:sans-serif}}main{{max-width:1050px;margin:auto;min-width:0}}')
                         page.evaluate('''([common, locks, lang]) => {
                             const L={env:{lang}}, base={extend:x=>x};
-                            const M=new Function('rpc','baseclass','L',common)({declare:()=>()=>{}},base,L);
+                            const M=new Function('rpc','baseclass','L',common)({declare:()=>()=>Promise.resolve({})},base,L);
                             M.watchSms=()=>{};
                             window.view=new Function('view','M',locks)(base,M);
                             view.wire=function(root){this.Q=id=>root.querySelector('#mud-'+id);};

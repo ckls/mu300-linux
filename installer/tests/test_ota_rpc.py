@@ -37,6 +37,79 @@ class RPCTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'must be an object'):
             self.call('status', ['not-an-object'])
 
+    def test_bootstrap_passes_review_id_for_generic_web_upload(self):
+        with patch.object(sys,'argv',['rpc.py','start','/target/etc/unisoc-ota/upload.ota','b'*64]), \
+             patch.object(self.rpc,'dispatch',return_value={}) as dispatch, redirect_stdout(io.StringIO()):
+            self.rpc.main()
+        dispatch.assert_called_once_with('start','/target/etc/unisoc-ota/upload.ota','b'*64)
+
+    def test_start_acknowledges_before_any_bulk_preparation_and_holds_lock(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as d:
+            self.rpc.STATE=Path(d);self.rpc.JOB=Path(d)/'job.json'
+            def launch(argv,**kwargs):
+                state=json.loads(self.rpc.JOB.read_text())
+                self.assertEqual((state['status'],state['phase'],state['patch_id']),('running','queued','b'*64))
+                self.assertEqual(argv[2],'_prepare_apply')
+                self.assertTrue(kwargs['pass_fds'])
+                with (Path(d)/'job.lock').open('a') as other:
+                    with self.assertRaises(BlockingIOError):fcntl.flock(other,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                return Mock()
+            with patch.object(self.rpc.subprocess,'Popen',side_effect=launch), \
+                 patch.object(self.rpc,'Patch',side_effect=AssertionError('HTTP must not inspect/copy the archive')):
+                result=self.rpc.worker('apply',str(Path(d)/'upload.ota'),'b'*64)
+            self.assertEqual(result,{'status':'running','patch_id':'b'*64,'phase':'queued'})
+
+    def test_spawn_failure_cannot_leave_a_phantom_running_job(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.rpc.STATE=Path(d);self.rpc.JOB=Path(d)/'job.json'
+            with patch.object(self.rpc.subprocess,'Popen',side_effect=OSError('fixture spawn failure')):
+                with self.assertRaises(OSError):self.rpc.worker('apply',str(Path(d)/'upload.ota'),'b'*64)
+            state=json.loads(self.rpc.JOB.read_text())
+            self.assertEqual(state['status'],'failed')
+            self.assertIn('spawn failure',state['result']['error'])
+
+    def test_first_web_start_prepares_then_enters_worker_without_recursive_start(self):
+        import fcntl
+        for ram in ('','/'):
+            with self.subTest(ram=ram), tempfile.TemporaryDirectory() as d:
+                root=Path(d);self.rpc.ROOT=d;self.rpc.STATE=root/'etc/unisoc-ota';self.rpc.STATE.mkdir(parents=True)
+                self.rpc.JOB=self.rpc.STATE/'job.json';upload=self.rpc.STATE/'upload.ota';upload.write_bytes(b'fixture reviewed payload')
+                home=Path('/proc/1/root' if ram else d)/'tmp'/('unisoc-ota-'+'b'*64)
+                with (self.rpc.STATE/'job.lock').open('a') as held, \
+                     patch.dict(os.environ,{'UNISOC_OTA_RAM':ram}), \
+                     patch.object(self.rpc,'Patch') as archive, \
+                     patch.object(self.rpc,'prepare_runtime',return_value=home) as prepare, \
+                     patch.object(self.rpc.subprocess,'run',return_value=Mock(returncode=0,stdout=json.dumps({'id':'b'*64,'applicable':True}),stderr='')) as run, \
+                     patch.object(self.rpc.os,'execve',side_effect=SystemExit) as execute:
+                    archive.return_value.__enter__.return_value.id='b'*64
+                    fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                    with self.assertRaises(SystemExit):self.rpc.prepare_apply(str(upload),'b'*64,held.fileno())
+                    prepare.assert_called_once()
+                    self.assertEqual(prepare.call_args.kwargs,{'root':'/proc/1/root' if ram else d})
+                    setup=run.call_args.args[0]
+                    self.assertEqual(setup[-2:],[ 'inspect','/tmp/unisoc-ota-'+'b'*64])
+                    argv=execute.call_args.args[1]
+                    self.assertEqual(argv[-4:],['/ota/rpc.py','_worker','apply','/target/etc/unisoc-ota/reviewed-'+'b'*64+'.ota'])
+                    self.assertEqual(execute.call_args.args[2]['UNISOC_OTA_ROOT'],'/target')
+                    if ram:self.assertEqual(setup[:3],['/ota/busybox','chroot','/proc/1/root'])
+                self.assertFalse(upload.exists())
+                self.assertEqual((self.rpc.STATE/'active-runtime').read_text(),'/tmp/unisoc-ota-'+'b'*64+'/root\n')
+                self.assertEqual(json.loads(self.rpc.JOB.read_text())['phase'],'applying')
+                self.assertFalse(list(self.rpc.STATE.glob('candidate-*')))
+
+    def test_changed_upload_fails_before_runtime_or_system_writes(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.rpc.STATE=Path(d);self.rpc.JOB=Path(d)/'job.json';upload=Path(d)/'upload.ota';upload.write_bytes(b'changed')
+            with (Path(d)/'job.lock').open('a') as held, patch.object(self.rpc,'Patch') as archive, \
+                 patch.object(self.rpc,'prepare_runtime') as prepare, patch.object(self.rpc.os,'execve') as execute:
+                archive.return_value.__enter__.return_value.id='c'*64
+                self.rpc.prepare_apply(str(upload),'b'*64,held.fileno())
+            self.assertEqual(json.loads(self.rpc.JOB.read_text())['status'],'failed')
+            self.assertTrue(upload.exists())
+            self.assertFalse(list(Path(d).glob('candidate-*')))
+            prepare.assert_not_called();execute.assert_not_called()
+
     def test_reload_uses_stock_service_and_health_checks_before_success(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d); service=root/'etc/init.d/rpcd'; service.parent.mkdir(parents=True); service.touch()
@@ -101,6 +174,15 @@ class RPCTests(unittest.TestCase):
                     fcntl.flock(held, fcntl.LOCK_EX|fcntl.LOCK_NB)
                     self.assertEqual(self.rpc.dispatch('status')['job']['status'], 'running')
                 self.assertEqual(self.rpc.dispatch('status')['job']['status'], 'complete')
+
+    def test_reconciled_completion_retains_the_requested_patch_identity(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.rpc.STATE=Path(d);self.rpc.JOB=Path(d)/'job.json'
+            self.rpc.JOB.write_text(json.dumps({'status':'running','command':'apply','patch_id':'b'*64,'phase':'applying'}))
+            with patch.object(self.rpc,'Engine') as engine:
+                engine.return_value.status.return_value={'transaction':{'status':'complete','id':'b'*64}}
+                result=self.rpc.dispatch('status')['job']
+            self.assertEqual((result['status'],result['command'],result['patch_id']),('complete','apply','b'*64))
 
     def test_reboot_ack_window_retains_job_lock_until_child_exits(self):
         import fcntl

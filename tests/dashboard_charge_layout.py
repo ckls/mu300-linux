@@ -5,7 +5,7 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 JS = ROOT/'openwrt/luci-app-mu300/htdocs/luci-static/resources'
 sources = {name: (JS/path).read_text(encoding='utf-8') for name, path in {
-    'common':'mu300/common.js', 'charge':'mu300/charge.js', 'device':'view/mu300/device.js'}.items()}
+    'common':'mu300/common.js', 'network':'mu300/network-performance.js', 'charge':'mu300/charge.js', 'device':'view/mu300/device.js'}.items()}
 with sync_playwright() as p:
     browser = p.chromium.launch(executable_path='C:/Program Files/Google/Chrome/Application/chrome.exe')
     for lang in ('zh-cn', 'en', 'tr'):
@@ -25,6 +25,7 @@ with sync_playwright() as p:
                 window.chargeState={ok:true,available:true,supported:true,capacity:76,status:'Charging',online:true,
                     start:70,stop:80,enabled:true,power_on:true,full_once:false};
                 const rpc={declare:info=>(...args)=>{
+                    if(info.object==='unisoc-network-performance')return Promise.resolve({ok:true,supported:true,available:['cubic','bbr'],current:'cubic',qdisc:'pfifo_fast',selection:'default',defaults:{algorithm:'cubic'}});
                     if(info.object==='mu300-charge') {
                         if(info.method==='configure'){
                             saved.push(args);Object.assign(chargeState,{enabled:args[0]==='1',start:+args[1],stop:+args[2],power_on:args[3]==='1'});
@@ -39,7 +40,8 @@ with sync_playwright() as p:
                 const baseclass={extend:x=>x};
                 const M=new Function('baseclass','rpc','L',sources.common)(baseclass,rpc,L);
                 const Charge=new Function('baseclass','rpc','M',sources.charge)(baseclass,rpc,M);
-                const app=new Function('view','M','Charge','L',sources.device)({extend:x=>x},M,Charge,L);
+                const NetworkPerformance=new Function('baseclass','rpc','M',sources.network)(baseclass,rpc,M);
+                const app=new Function('view','M','Charge','L','NetworkPerformance',sources.device)({extend:x=>x},M,Charge,L,NetworkPerformance);
                 document.querySelector('main').appendChild(app.render({ok:1,role:'device',net_current:'ncm'}));
             }''', dict(sources=sources, lang=lang, dark=dark))
             save = page.locator('[data-charge="save"]')

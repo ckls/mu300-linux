@@ -534,14 +534,85 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(rpc.dispatch('start',review_id=review_id)['status'],'running')
             self.assertTrue(launch.call_args.kwargs['start_new_session'])
             self.assertTrue(launch.call_args.kwargs['pass_fds'])
+            self.assertIn('_prepare_apply',launch.call_args.args[0])
+        self.assertTrue(rpc.UPLOAD.exists(),'RPC acknowledgement must not wait for file staging')
+        frozen=rpc.stage_upload(rpc.UPLOAD,review_id)
         self.assertFalse(rpc.UPLOAD.exists())
+        self.assertEqual(frozen.name,'reviewed-'+review_id+'.ota')
         other=copy.deepcopy(self.m);other['target_version']='e5-r3'
         package(rpc.UPLOAD,other)
         with mock.object(rpc.subprocess,'Popen') as launch:
             with self.assertRaisesRegex(ValueError,'reviewed'):
-                rpc.dispatch('start',review_id=review_id)
+                rpc.stage_upload(rpc.UPLOAD,review_id)
             launch.assert_not_called()
         self.assertTrue(rpc.UPLOAD.exists())
+
+    def test_first_web_update_ack_exec_lock_and_completion_without_second_start(self):
+        import fcntl, signal, time, traceback
+        from types import SimpleNamespace
+        directory=Path(__file__).resolve().parents[2]/'openwrt/luci-app-unisoc-ota/root/usr/lib/unisoc-ota'
+        sys.path.insert(0,str(directory));self.addCleanup(lambda:sys.path.remove(str(directory)))
+        spec=importlib.util.spec_from_file_location('ota_first_web',directory/'rpc.py')
+        rpc=importlib.util.module_from_spec(spec);spec.loader.exec_module(rpc)
+        rpc.ROOT='';rpc.STATE=self.e.state;rpc.STATE.mkdir(parents=True)
+        rpc.JOB=rpc.STATE/'job.json';rpc.UPLOAD=rpc.STATE/'upload.ota';rpc.UPLOAD.write_bytes(self.p.read_bytes())
+        with Patch(self.p) as patch:review_id=patch.id
+        ram=self.runtime_fixture();home=self.root/'fake-runtime';ready=self.root/'exec-ready';go=self.root/'go'
+        wrapper=self.root/'isolated-worker.py'
+        wrapper.write_text('import os,sys,time\nfrom pathlib import Path\n'+
+            'sys.path.insert(0,'+repr(str(directory))+')\nimport rpc\n'+
+            'Path('+repr(str(ready))+').touch()\n'+
+            'while not Path('+repr(str(go))+').exists(): time.sleep(.01)\n'+
+            "sys.argv=['rpc.py','_worker','apply',sys.argv[1]]\nrpc.main()\n")
+        children=[];real_exec=os.execve
+        def setup(argv,**kwargs):
+            self.assertEqual(argv[-2:],[ 'inspect',str(home)])
+            with Patch(rpc.STATE/('reviewed-'+review_id+'.ota')) as patch:check=self.e.inspect(patch)
+            return SimpleNamespace(returncode=0,stdout=json.dumps(check),stderr='')
+        def isolated_exec(program,argv,env):
+            self.assertEqual(argv[-3:-1],['_worker','apply'])
+            frozen=argv[-1].removeprefix('/target')
+            env=dict(env,UNISOC_OTA_ROOT=str(self.root),UNISOC_OTA_RAM=str(ram),UNISOC_OTA_LIVE='')
+            env.pop('PYTHONHOME',None)
+            real_exec(sys.executable,[sys.executable,str(wrapper),frozen],env)
+        def launch(argv,**kwargs):
+            self.assertIn('_prepare_apply',argv)
+            pid=os.fork()
+            if pid==0:
+                try:rpc.prepare_apply(str(rpc.UPLOAD),review_id,kwargs['pass_fds'][0])
+                except BaseException:(self.root/'child-error').write_text(traceback.format_exc())
+                os._exit(1)
+            children.append(pid);return SimpleNamespace(pid=pid)
+        try:
+            with mock.dict(os.environ,{'UNISOC_OTA_RAM':'','UNISOC_OTA_LIVE':''}), \
+                 mock.object(rpc,'prepare_runtime',return_value=home), \
+                 mock.object(rpc.subprocess,'run',side_effect=setup), \
+                 mock.object(rpc.subprocess,'Popen',side_effect=launch), \
+                 mock.object(rpc.os,'execve',side_effect=isolated_exec):
+                response=rpc.dispatch('start',review_id=review_id)
+            self.assertEqual(response['status'],'running')
+            end=time.monotonic()+10
+            while not ready.exists() and time.monotonic()<end:time.sleep(.01)
+            self.assertTrue(ready.exists(),(self.root/'child-error').read_text() if (self.root/'child-error').exists() else 'worker never execed')
+            self.assertEqual((self.root/'usr/lib/test').read_bytes(),b'old')
+            with (rpc.STATE/'job.lock').open('a') as held:
+                with self.assertRaises(BlockingIOError):fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            go.touch()
+            end=time.monotonic()+15;finished=False
+            while time.monotonic()<end:
+                done,status=os.waitpid(children[0],os.WNOHANG)
+                if done:finished=True;children.clear();self.assertEqual(status,0);break
+                time.sleep(.01)
+            self.assertTrue(finished,'worker did not finish')
+            self.assertEqual((self.root/'usr/lib/test').read_bytes(),b'new')
+            job=json.loads(rpc.JOB.read_text());self.assertEqual(job['status'],'complete')
+            self.assertEqual(job['result']['id'],review_id)
+            self.assertEqual(self.e.identity()['version'],'e5-r2')
+            self.assertFalse(list(rpc.STATE.glob('reviewed-*.ota')))
+        finally:
+            for pid in children:
+                try:os.kill(pid,signal.SIGTERM);os.waitpid(pid,0)
+                except ProcessLookupError:pass
 
     def test_ram_rpc_reboot_uses_isolated_busybox(self):
         directory=Path(__file__).resolve().parents[2]/'openwrt/luci-app-unisoc-ota/root/usr/lib/unisoc-ota'

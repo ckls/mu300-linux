@@ -2,6 +2,7 @@
 'require view';
 'require mu300.common as M';
 'require mu300.charge as Charge';
+'require mu300.network-performance as NetworkPerformance';
 
 return view.extend({
 	load: function() { return L.resolveDefault(M.callUsbGet(), {}); },
@@ -71,10 +72,12 @@ return view.extend({
 		this.paint();
 		this.refreshAdapters();
 		Charge.mount(root);
+		this._networkPerformance = NetworkPerformance.mount(root);
 		return root;
 	},
 	q: function(id) { return this.root.querySelector('#mud-usb-' + id); },
 	unload: function() {
+		if (this._networkPerformance) this._networkPerformance.dispose();
 		this._disposed = true; this._epoch++;
 		this._timers.forEach(clearTimeout); this._timers.clear();
 		if (this._toast) this._toast.close();

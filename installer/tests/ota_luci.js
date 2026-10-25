@@ -6,27 +6,32 @@ const source = fs.readFileSync(path.join(__dirname, '../../openwrt/luci-app-unis
 let messages;
 const idle = () => ({identity:{version:'test-r2'},transaction:{id:'a'.repeat(64),status:'complete'},recovery:{available:true,bytes:1048576,count:1},job:{status:'complete',result:{}}});
 function fixture(write=true, initial=idle(), locale="en") {
-    const state={calls:[],notifications:[],ticks:new Set(),modal:[],writable:write,status:initial,rejectStart:false,rejectInspect:null,rejectRollback:false,rejectStatus:false,rejectReboot:null,reconnects:0,rollbackCheck:{available:true,reason:'ready',conflicts:[]}};
+    const state={calls:[],arguments:[],declarations:[],notifications:[],ticks:new Set(),modal:[],writable:write,status:initial,rejectStart:false,rejectInspect:null,rejectRollback:false,rejectStatus:false,rejectReboot:null,reconnects:0,rollbackCheck:{available:true,reason:'ready',conflicts:[]}};
     const E=(tag,attrs={},children=[])=>({tag,...attrs,children,appendChild(node){this.children.push(node);},setAttribute(name,value){this[name]=value;}});
-    const rpc={declare:({method})=>(...args)=>{
+    const rpc={declare:options=>{state.declarations.push(options);const {method}=options;return (...args)=>{
         state.calls.push(method);
+        state.arguments.push([method,args]);
         if(method==='status')return state.rejectStatus?Promise.reject(Error('offline')):Promise.resolve(state.status);
         if(method==='inspect'&&state.rejectInspect)return Promise.reject(Error(state.rejectInspect));
-        if(method==='inspect')return Promise.resolve({id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}});
+        if(method==='inspect')return state.inspectPromise||Promise.resolve(state.inspection||{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}});
         if(method==='start'&&state.rejectStart)return Promise.reject(Error('start rejected'));
+        if(method==='start'&&state.startError)return Promise.reject(Error(state.startError));
+        if(method==='start'&&state.startPromise)return state.startPromise;
         if(method==='discard_recovery'){state.status={...state.status,recovery:{available:false,bytes:0,count:0,deleted:true}};return Promise.resolve({status:'recovery_deleted'});}
         if(method==='rollback_check')return Promise.resolve(state.rollbackCheck);
         if(method==='reboot'&&state.rejectReboot)return Promise.reject(Error(state.rejectReboot));
         if(method==='rollback'&&state.rejectRollback)return Promise.reject(Error('rollback rejected'));
         return Promise.resolve({status:'running'});
-    }};
-    const ui={uploadFile:()=>Promise.resolve(),showModal:(_title,nodes)=>{state.modal=nodes;},hideModal:()=>{state.modal=[];},addNotification:(_a,node)=>state.notifications.push(node.children),awaitReconnect:()=>{state.reconnects++;}};
+    }}};
+    const ui={uploadFile:()=>{state.uploads=(state.uploads||0)+1;return state.uploadPromise||Promise.resolve();},showModal:(_title,nodes)=>{state.modal=nodes;},hideModal:()=>{state.modal=[];},addNotification:(_a,node)=>state.notifications.push(node.children),awaitReconnect:()=>{state.reconnects++;}};
     const view=new Function('view','rpc','ui','poll','E','document','L','M',source)({extend:v=>v},rpc,ui,{add:fn=>state.ticks.add(fn),remove:fn=>state.ticks.delete(fn)},E,{documentElement:{lang:'en'}},{hasViewPermission:()=>state.writable},{injectCss:()=>{state.themeInjected=true;},localizeMenu:()=>{},uiLanguage:()=>locale});
     const all=nodes=>nodes.flatMap(n=>!n||typeof n!=='object'?[]:[n,...all(Array.isArray(n.children)?n.children:[])]);
     const root=view.render([messages,state.status]);
     state.button=name=>all([root,...state.modal]).find(n=>n.tag==='button'&&(n['aria-label']===name||n.children===name));
     state.modalButton=name=>all(state.modal).find(n=>n.tag==='button'&&n.children===name);
     state.text=()=>all([root]).map(n=>n.textContent||'').join(' ');state.root=root;
+    state.overlay=()=>all([root]).find(n=>n.class==='mud-ota-overlay');
+    state.dispose=()=>view.unload();
     state.flush=()=>new Promise(resolve=>setImmediate(resolve));
     return state;
 }
@@ -37,6 +42,7 @@ async function main(){
     assert.match(messages.explainError('Rollback conflict: usr/lib/unisoc-ota/rpc.py; changed=sha256,mode').message,/内容、权限/);
     assert.match(messages.explainError('unrecognized raw failure',true).message,/Technical details|technical details/);
     const f=fixture(false);
+    assert(f.declarations.every(o=>o.nobatch===true),'Slow OTA calls must not share an HTTP batch');
     for(const name of ['Import patch','Roll back last patch','Delete recovery copy','Reboot'])assert(f.button(name).disabled);
     for(const [pending, message] of [[true,'Reboot to use'],[false,'device has restarted'],[undefined,'last operation completed']]){
         const state=idle();state.reboot_required=pending;const page=fixture(true,state);
@@ -86,9 +92,9 @@ async function main(){
     await p.button('Import patch').onclick();p.button('Apply patch').click();await p.flush();
     p.rejectStatus=true;
     for(const tick of [...p.ticks])await tick();
-    assert.equal(p.notifications.length,1,'Polling outage was not shown');
+    assert.equal(p.notifications.length,0,'A progress timeout was misreported as a failed update');assert(p.text().includes('Checking update status'),'Polling outage has no visible reconnecting state');
     for(const tick of [...p.ticks])await tick();
-    assert.equal(p.notifications.length,1,'One outage spammed notifications');
+    assert.equal(p.notifications.length,0,'Polling outage spammed notifications');
     p.rejectStatus=false;
     for(const tick of [...p.ticks])await tick();
     assert(!p.button('Import patch').disabled,'Polling never recovered');
@@ -107,6 +113,42 @@ async function main(){
     await b.button('Reboot').onclick();
     assert.equal(b.reconnects,0,'A rejected reboot was treated as a restart');
     assert.equal(b.notifications.length,1,'Business rejection was hidden');
+    const stages=fixture();let uploaded,inspected,started;
+    stages.uploadPromise=new Promise(r=>uploaded=r);stages.inspectPromise=new Promise(r=>inspected=r);stages.startPromise=new Promise(r=>started=r);
+    const importing=stages.button('Import patch').onclick();
+    assert(stages.button('Import patch').disabled);assert.equal(stages.button('Import patch')['aria-busy'],'true');
+    assert(stages.overlay().hidden,'Our overlay must not block LuCI file selection/upload');
+    uploaded();await stages.flush();assert(!stages.overlay().hidden,'Inspection has no loading overlay');
+    await stages.button('Import patch').onclick();assert.equal(stages.uploads,1,'Duplicate import accepted');
+    inspected({id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}});await importing;
+    assert(stages.overlay().hidden);assert(stages.text().includes('Awaiting confirmation'));
+    assert(!stages.calls.includes('start'),'Inspection started writes without confirmation');
+    const confirming=stages.button('Apply patch').click();assert(!stages.overlay().hidden);
+    started({status:'running',patch_id:'a'.repeat(64),phase:'queued'});await confirming;
+    assert(stages.button('Import patch').disabled);assert(!stages.overlay().hidden);
+    stages.status={...idle(),job:{status:'running',command:'apply',patch_id:'a'.repeat(64),phase:'runtime'}};
+    for(const tick of [...stages.ticks])await tick();
+    stages.status={...idle(),transaction:{id:'a'.repeat(64),status:'applying',started:4,total:10},job:{status:'running',command:'apply',patch_id:'a'.repeat(64),phase:'applying'}};
+    for(const tick of [...stages.ticks])await tick();
+    assert.equal(stages.overlay().children[0].children[2].textContent,'4 / 10');
+    stages.status={...idle(),reboot_required:true,job:{status:'complete',command:'apply',result:{id:'a'.repeat(64)}}};
+    for(const tick of [...stages.ticks])await tick();
+    assert(stages.overlay().hidden);assert(!stages.button('Import patch').disabled);assert(stages.text().includes('Reboot to use'));
+    for(const status of ['running','complete']){
+        const lost=fixture();lost.startError='XHR request timed out';
+        lost.status={...idle(),reboot_required:status==='complete',job:{status,command:'apply',patch_id:'a'.repeat(64),result:{id:'a'.repeat(64)}}};
+        await lost.button('Import patch').onclick();await lost.button('Apply patch').click();
+        assert.equal(lost.notifications.length,0,'Confirmed '+status+' job was misreported as failed');
+        assert.equal(lost.overlay().hidden,status==='complete');
+        assert.equal(lost.calls.filter(x=>x==='start').length,1,'Lost acknowledgement retried the update');
+    }
+    const unrelated=fixture();unrelated.startError='XHR request timed out';unrelated.status={...idle(),job:{status:'complete',command:'apply',result:{id:'b'.repeat(64)}},transaction:{id:'b'.repeat(64),status:'complete'}};
+    await unrelated.button('Import patch').onclick();await unrelated.button('Apply patch').click();assert.equal(unrelated.notifications.length,1,'Unrelated old completion hid a rejected update');
+    const incomplete=fixture();incomplete.inspection={applicable:true,manifest:{operations:[]}};
+    await incomplete.button('Import patch').onclick();assert(!incomplete.calls.includes('start'));assert.equal(incomplete.notifications.length,1);assert(incomplete.overlay().hidden);
+    const abandoned=fixture();let finish;abandoned.inspectPromise=new Promise(r=>finish=r);
+    const pending=abandoned.button('Import patch').onclick();await abandoned.flush();abandoned.dispose();
+    finish({id:'a'.repeat(64),applicable:true,manifest:{operations:[]}});await pending;assert.equal(abandoned.modal.length,0);assert(abandoned.overlay().hidden);
     console.log('PASS LuCI permission, rejected/lost start, rollback failure, polling outage and recovery');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

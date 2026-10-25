@@ -1102,7 +1102,10 @@ function ubus_setup() {
 			}
 		},
         signal: {
-            args: {slot:''},
+            // uhttpd adds this session metadata after checking the ACL. The
+            // native ubus binding rejects undeclared fields before call().
+            // Accept it as transport metadata; only slot selects the AT read.
+            args: {slot:'', ubus_rpc_session:''},
             call: (req,msg) => {
                 msg ??= req.args;
                 if (msg?.slot!='0' && msg?.slot!='1') return req.reply({error:'invalid SIM slot'});
