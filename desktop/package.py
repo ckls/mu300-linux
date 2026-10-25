@@ -92,6 +92,7 @@ unset MU300_DEPLOY_ROOT
             shutil.copyfile(Path(adb_dir)/n,stage/'tools'/n)
     if os.environ.get('OPENWRT_GUI_OPTIONAL') != '1':
         runpy.run_path(str(TOP/'installer/package_gui.py'))['attach'](stage,exe if exe and Path(exe).is_dir() else None)
+        runpy.run_path(str(TOP/'tools/package-diff-studio.py'))['attach'](stage)
     # This guide is packaged per firmware; keep the shared GUI sources unchanged.
     guide = stage/'START-HERE.md'
     login = ('**MU300 / F50 / V50 / U30Air initial login:** username `root`, password `root`. '

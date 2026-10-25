@@ -102,10 +102,15 @@ class Ownership(unittest.TestCase):
 class Archives(unittest.TestCase):
     def fixture(self, path, *, corrupt=False, extra=None):
         files = {'payload/boot-linux.img': b'boot', 'payload/mu300-openwrt.tar.gz': b'root', 'OpenWrt-Installer.py': b'cli'}
+        runtime={'OpenWrt-Diff-Studio.exe':b'diff GUI','OpenWrt-Diff-Studio.py':b'diff CLI',
+                 'OpenWrt-Diff-Studio.app/Contents/MacOS/openwrt-installer':b'mac GUI',
+                 'tools/backend/openwrt-backend.exe':b'windows backend','tools/macos/backend/openwrt-backend':b'mac backend'}
+        files.update(runtime)
+        files['diff-tool.json']=json.dumps({'protocol':1,'files':{n:hashlib.sha256(v).hexdigest() for n,v in runtime.items()}}).encode()
         if extra:files[extra] = b'duplicate root'
         manifest = {'magisk_layout': {'boot-linux.img':'payload/boot-linux.img', 'mu300-openwrt.tar.gz':'payload/mu300-openwrt.tar.gz'},
                     'magisk': {k:hashlib.sha256(v).hexdigest() for k,v in files.items() if k.startswith('payload/')},
-                    'desktop': {'OpenWrt-Installer.py':hashlib.sha256(files['OpenWrt-Installer.py']).hexdigest()}}
+                    'desktop': {n:hashlib.sha256(v).hexdigest() for n,v in files.items() if not n.startswith('payload/')}}
         if corrupt:files['payload/boot-linux.img'] = b'wrong'
         with zipfile.ZipFile(path, 'w') as archive:
             for k,v in files.items():archive.writestr(k,v)

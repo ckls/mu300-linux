@@ -155,7 +155,7 @@ def digest(path):
     return h.hexdigest()
 
 
-def verify_archive(path):
+def verify_archive(path, require_diff=False):
     with zipfile.ZipFile(path) as archive:
         names = archive.namelist()
         if len(names) != len(set(names)) or archive.testzip():
@@ -182,6 +182,17 @@ def verify_archive(path):
                     h.update(chunk)
             if h.hexdigest() != wanted:
                 raise ValueError('ZIP checksum mismatch: ' + name)
+        if require_diff:
+            tool=json.loads(archive.read('diff-tool.json'))
+            required={'OpenWrt-Diff-Studio.exe','OpenWrt-Diff-Studio.py',
+                      'OpenWrt-Diff-Studio.app/Contents/MacOS/openwrt-installer',
+                      'tools/backend/openwrt-backend.exe','tools/macos/backend/openwrt-backend'}
+            if tool.get('protocol')!=1 or not required.issubset(tool.get('files',{})):
+                raise ValueError('Diff Studio entries/runtime missing')
+            for name,wanted in tool['files'].items():
+                if (name not in required and not name.startswith(('backend/','tools/backend/',
+                        'tools/macos/backend/','OpenWrt-Diff-Studio.app/'))) or expected.get(name)!=wanted:
+                    raise ValueError('Diff Studio scope/checksum mismatch: '+name)
 
 
 class Task:
@@ -247,7 +258,7 @@ def package(task, common, rows):
                'MU300_PACKAGE_WORK': str(assembly), 'MU300_ROOTFS_OUT_DIR': str(assembly),
                'MU300_VERSION': version, 'MU300_DESKTOP_INSTALLER': '1', 'OPENWRT_GUI_OPTIONAL': '0'}
         task.run(model + '-package', ['sh', TOP / 'tools/build-openwrt-tf-magisk.sh', archive], extra_env=env)
-        verify_archive(archive)
+        verify_archive(archive, require_diff=True)
         release = json.loads((assembly / ('release-' + env['MU300_KERNEL'] + '.json')).read_text())
         target = pending / (release['package_name'] + '.zip')
         shutil.copyfile(archive, target)
@@ -267,13 +278,50 @@ def package(task, common, rows):
     print('Verified release: ' + str(destination))
 
 
+def add_diff(task,rows,source):
+    if source is None:raise ValueError('Supply --source-release')
+    source=source.resolve()
+    if source.parent!=(TOP/'release').resolve() or source.name.startswith('.'):
+        raise ValueError('Use a verified published local release')
+    base=json.loads((source/'BUILD-RUN.json').read_text())
+    if base.get('state')!='verified':raise ValueError('Source release is not verified')
+    selected={}
+    for profile in rows:
+        asset=next(a for a in base['assets'] if a['profile']==profile)
+        path=source/asset['file']
+        if path.resolve().parent!=source or digest(path)!=asset['sha256']:
+            raise ValueError('Source archive checksum/path mismatch')
+        verify_archive(path);selected[profile]=path
+        if stage_path(task.workspace,profile).exists():raise ValueError('Prior staging retained: '+profile)
+    identify=runpy.run_path(str(TOP/'tools/release-identity.py'))['identify']
+    before=identify(TOP,'mu300','7.2.8');parent=TOP/'release';pending=parent/('.building-'+task.id);pending.mkdir()
+    task.save(pending_output=str(pending),build_type='diff-tools-only',base_release=str(source))
+    repack=runpy.run_path(str(TOP/'tools/repack-with-diff.py'))['repack'];assets=[]
+    for profile,path in selected.items():
+        stage=stage_path(task.workspace,profile);stage.mkdir(parents=True)
+        write_json(stage/'.build-owner.json',{'owner':OWNER,'profile':profile})
+        studio=stage/'assembly'
+        task.run(profile+'-diff',[sys.executable,TOP/'tools/package-diff-studio.py','--prepare','--package',studio])
+        target=pending/(path.stem+'-tools-g'+before['source_commit'][:8]+'.zip')
+        repack(path,target,studio,before);verify_archive(target,require_diff=True)
+        checksum=digest(target);(pending/(target.name+'.sha256')).write_text(checksum+'  '+target.name+'\n')
+        assets.append({'profile':profile,'file':target.name,'bytes':target.stat().st_size,'sha256':checksum})
+        clean_stage(task.workspace,profile);task.save(assets=assets)
+    if identify(TOP,'mu300','7.2.8')['source_fingerprint']!=before['source_fingerprint']:
+        raise ValueError('Sources changed during repack; output stays unpublished')
+    write_json(pending/'BUILD-RUN.json',{**task.data,'state':'verified','source':before,'assets':assets})
+    destination=parent/task.id;pending.rename(destination);task.save(state='complete',output=str(destination),assets=assets)
+    print('Verified release: '+str(destination))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('plan', 'check', 'package', 'run', 'status', 'clean-staging'))
+    parser.add_argument('action', choices=('plan', 'check', 'package', 'add-diff', 'run', 'status', 'clean-staging'))
     parser.add_argument('--profiles', nargs='+', choices=('all', *PROFILES), default=['all'])
     parser.add_argument('--workspace', type=Path, default=Path.home() / 'openwrt-build')
     parser.add_argument('--config', type=Path, default=TOP / 'tools/build-layout.json')
     parser.add_argument('--label', default='build')
+    parser.add_argument('--source-release',type=Path)
     # Compiler arguments follow -- and are passed without a shell.
     args, command = parser.parse_known_args()
     if command and command[0] == '--': command = command[1:]
@@ -299,6 +347,8 @@ def main():
             if args.action == 'run':
                 if not command: raise ValueError('Supply a real compiler/build command after --')
                 task.run('command', command); task.save(state='complete')
+            elif args.action=='add-diff':
+                add_diff(task,rows,args.source_release)
             else:
                 package(task, common, rows)
         except BaseException as error:

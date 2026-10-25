@@ -85,6 +85,10 @@ gh run download <run-id> --repo sprd-linux-devs/e5-linux --name openwrt-installe
 
 ## 4. Diff Studio 与最终组包
 
+正式包已经固定内置 Diff Studio。仅给旧正式包补工具时，使用 LOCAL-BUILD 中的
+`build-release.py add-diff --source-release ...`，不重编固件，不复制完整 rootfs。
+以下 build-ota.py 仅用于单独交付工具。
+
 当前平台的原生安装器验证后，可复用同一份新编 GUI/后端生成 Diff Studio：
 
 ```powershell

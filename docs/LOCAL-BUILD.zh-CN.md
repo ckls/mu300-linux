@@ -80,3 +80,19 @@ python3 tools/build-release.py clean-staging --profiles mu300-7.2
 E5 与 MU300 工具共用工作区 `locks/openwrt-release.lock`，防止同时读写共享
 SDK/源码缓存；staging 与日志按仓库分开。旧脚本直接执行无法受此锁保护，
 所以本地构建必须经过固定入口。CI 的独立 runner 不受本规范改变。
+
+## 仅补入 Diff Studio：快速重打包
+
+正式包默认通过 `tools/package-diff-studio.py` 附带两个平台的 Diff Studio 与 Python 入口，
+与安装器共用后端。已有已验证发布遗漏工具时，使用下面的入口，不能另写旧 worker：
+
+```sh
+python3 tools/build-release.py add-diff --workspace /home/kano/openwrt-build --profiles all \
+  --source-release /absolute/repo/release/<verified-task> --label diff-tools
+```
+
+只接受 `release/` 下带已验证 BUILD-RUN.json 的正式发布。先核对源 ZIP 与哈希，
+用本仓库源码指纹匹配的原生程序附加工具；boot、rootfs、Magisk 和修复工具载荷均不改。
+ZIP 流式处理，不解压完整 rootfs。新工具纳入原 desktop manifest 和 CRC／SHA256 校验，
+每个发布包仍只有一份 boot、一份 rootfs 和各平台一份后端；最终通过才发布新目录。
+旧包不覆盖，失败现场按既有 clean-staging 规则处理。

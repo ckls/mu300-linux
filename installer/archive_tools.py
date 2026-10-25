@@ -8,12 +8,13 @@ def write_member(archive, path, name):
     path = Path(path)
     info = zipfile.ZipInfo.from_file(path, name)
     mode = stat.S_IMODE(path.stat().st_mode)
-    mac = name.startswith(('OpenWrt-Installer.app/', 'tools/macos/'))
+    app = name.split('/', 1)[0].endswith('.app')
+    mac = app or name.startswith('tools/macos/')
     # Windows copy/extract/chmod cannot retain POSIX mode bits. Mach-O code,
     # the app entry and the bundled launchers must still execute after unzip.
     with path.open('rb') as stream:
         magic = stream.read(4) if mac else b''
-        executable = (name.startswith('OpenWrt-Installer.app/Contents/MacOS/')
+        executable = (app and '/Contents/MacOS/' in name
                       or name in ('tools/macos/adb', 'tools/macos/backend/openwrt-backend')
                       or name.startswith('launchers/') and name.endswith('.sh')
                       or mac and magic in (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe',
