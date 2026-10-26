@@ -30,6 +30,8 @@ done
 rm -rf $R && mkdir -p $R
 tar -xf /w/base.tar -C $R
 cp -a /w/overlay/. $R/
+# Retired call helpers must not survive in an older exported base.
+rm -f $R/opt/mu300/bin/mu300-voice $R/opt/mu300/bin/mu300-audio-dsp
 chmod 0755 $R/opt/mu300/bin/mu300-lowlatency
 # /lib is a symlink to usr/lib on Ubuntu; always write through usr/lib
 mkdir -p $R/usr/lib/modules/$KREL/extra

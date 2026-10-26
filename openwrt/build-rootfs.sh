@@ -191,6 +191,8 @@ printf "127.0.0.1\tlocalhost\n\n::1\tlocalhost ip6-localhost ip6-loopback\nff02:
 printf "mu300\n" > $R/etc/hostname   # the real one comes from uci (etc/uci-defaults/90-mu300)
 cp -a /in/opt-mu300 $R/opt/mu300
 cp -a /in/overlay/. $R/
+# Do not retain the retired call helpers from an older base image.
+rm -f $R/opt/mu300/bin/mu300-voice $R/opt/mu300/bin/mu300-audio-dsp
 mkdir -p $R/usr/share/ucode/mu300
 cp -a /in/ucode-mu300/. $R/usr/share/ucode/mu300/
 chmod 0755 $R/etc/uci-defaults/95-disable-ap-uapsd

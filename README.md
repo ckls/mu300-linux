@@ -329,7 +329,7 @@ Like the installer, it offers to reboot the device from Linux into Android first
 | Temperature control, status LEDs, SIM tray | ✅ |
 | Back to Android, automatic rollback | ✅ |
 | Screen output (HDMI over USB-C) | ✗ the USB-C power chip never answers, so no display |
-| Sound | 🚧 the card comes up (`sprdphone-sc2730`, 19 PCM devices), the audio DSP loads and answers, and calls connect — but no audio moves: every scene takes one buffer and stops. Android does not get further on this board either ([FINDINGS 24](docs/FINDINGS.md)) |
+| Sound | No built-in speaker or microphone; USB audio support remains available. |
 | Mainline kernel (6.18) | 🚧 experimental, see [`upstream/`](upstream/) |
 
 ## How it works, in short
