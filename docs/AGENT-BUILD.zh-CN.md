@@ -6,7 +6,7 @@ Windows 和固件在本机编译；Apple Silicon 安装器可以使用 GitHub ma
 
 ## 固定环境与边界
 
-- Windows 仓库：`D:\Git\mu300-linux-clean-tf-7.2`；维护分支：`clean-tf-7.2`（不得误用历史 main）。
+- Windows 仓库：`D:\Git\mu300-linux-clean-tf-7.2`；维护分支：`minikano-openwrt-feats`（不得误用历史 main）。
 - WSL：`Ubuntu-22.04`，用户 `kano`，仓库 `/mnt/d/Git/mu300-linux-clean-tf-7.2`。
 - 唯一 Linux 工作区：`/home/kano/openwrt-build`。
 - Windows Python：`C:\Python312\python.exe`，Node/Rust 使用本机已有环境。

@@ -3,7 +3,7 @@
 本机 Agent 的完整操作指南见 [AGENT-BUILD.zh-CN.md](AGENT-BUILD.zh-CN.md)。
 Windows/固件在本机完成；Apple Silicon App 可按用户授权使用上游 macOS CI 原生重编，下载后仍须通过源码指纹校验。
 
-本仓库维护分支为 `clean-tf-7.2`。不变更上游、分支及提交历史。
+本仓库维护分支为 `minikano-openwrt-feats`。不变更上游、分支及提交历史。
 本地任务统一走受版本控制的 `tools/build-release.py`；不得复制/执行旧的
 `work/` 日期 worker，或通过字符串替换拼接另一份发布流程。
 
