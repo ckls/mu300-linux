@@ -157,7 +157,7 @@ return view.extend({
         poll.add(this.refresh,2);
         var radioPanel=el('section',null,'mud-card mud-sim-panel');root.append(radioPanel);
         radioPanel.style.marginTop='16px';
-        this.radios=SimRadio.attach(radioPanel);
+        this.radios=SimRadio.attach(radioPanel,{dsds:true});
         this.refreshRadios=function(){return self.radios.refresh();};poll.add(this.refreshRadios,2);
         return root;
     },

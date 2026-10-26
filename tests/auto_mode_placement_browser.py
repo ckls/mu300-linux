@@ -16,7 +16,7 @@ with sync_playwright() as p:
         js=app/'htdocs/luci-static/resources'
         assert 'auto_work_mode' not in (js/'view/mu300/settings.js').read_text(encoding='utf-8')
         sources=[(js/f).read_text(encoding='utf-8') for f in ('mu300/common.js','mu300/auto-mode.js','view/mu300/locks.js')]
-        for default in ('134','152'):
+        for default in (None,'134','152'):
             for lang in ('zh-cn','en','tr'):
                 for width in (360,1280):
                     page=browser.new_page(viewport={'width':width,'height':900})
@@ -66,7 +66,7 @@ with sync_playwright() as p:
                     page.wait_for_function('document.querySelector("#mud-auto-mode-select").options.length===3')
                     assert page.locator('#mud-auto-mode').is_hidden()
                     assert select.input_value()=='152'
-                    assert default in select.locator('option').first.inner_text()
+                    assert (default or '152') in select.locator('option').first.inner_text()
                     page.evaluate("state.mode.label='auto';view.paint()")
                     assert select.is_visible()
                     if lang!='zh-cn':assert not re.search(r'[\u4e00-\u9fff]',page.locator('#mud-auto-mode').inner_text())

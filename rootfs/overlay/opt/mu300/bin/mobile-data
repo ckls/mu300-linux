@@ -706,8 +706,7 @@ up_locked() {
     # a reproducible CFI panic in sipa_delegate. extra-modules deliberately
     # leaves this step to us on OpenWrt so the order is deterministic.
     _m=/lib/modules/$(uname -r)
-    if { [ -f "$_m/sipa-dele.ko" ] || [ -f "$_m/extra/sipa-dele.ko" ]; } &&
-       ! grep -q '^sipa_dele ' /proc/modules; then
+    if [ -f "$_m/sipa-dele.ko" ] || [ -f "$_m/extra/sipa-dele.ko" ]; then
         MU300_DELE_WAIT=20 /opt/mu300/bin/sipa-dele-start >/tmp/mu300-sipa-dele.log 2>&1 || {
             echo "sipa delegate did not become ready; refusing unsafe PDP activation" >&2
             exit 1
@@ -1036,6 +1035,11 @@ status() {
 
 
 case "${1:-status}" in
+    radio-dsds)
+        case "$DEVICE" in f50|u30air) ;; *) exit 2;; esac
+        case ${2:-} in 0|1) ;; *) exit 2;; esac
+        radio_locked /opt/mu300/bin/mu300-sim-radio --dsds-locked "$2"
+        ;;
     radio-policy)
         case ${2:-}:${3:-} in 0:0|0:1|1:0|1:1) ;; *) exit 2;; esac
         radio_locked /opt/mu300/bin/mu300-sim-radio --locked "$2" "$3"

@@ -109,20 +109,41 @@ class DelegateReadiness(ShellTest):
         super().setUp()
         (self.tmp/'modules').mkdir();(self.tmp/'modules/sipa-dele.ko').write_text('test file only')
         (self.tmp/'loaded-modules').write_text('');(self.tmp/'tty').touch()
-        self.stub('dmesg',"echo 'sprd-sbuf: channel 5-1'\n[ \"${HANDSHAKE:-1}\" != 1 ] || echo 'channel 5-120 send open msg'")
-        self.stub('mu300-at',"[ \"$MU300_AT_DAEMON_ONLY\" = 1 ] || exit 99; printf '+CGATT: %s\\n' \"${ATTACHED:-1}\"")
+        node=self.tmp/'sysfs'/'cp';node.mkdir(parents=True)
+        (node/'sipa_dele_wait').write_text('1\n')
+        (node/'sipa_dele_ready').write_text('1\n')
+        self.stub('dmesg','echo unexpected >> "$STUBLOG/dmesg-calls"; exit 99')
+        self.stub('uci',"case \"$*\" in *sim_slots) echo 2;; *data_sim) echo 0;; *) exit 1;; esac")
+        self.stub('mu300-at',"""[ "$MU300_AT_DAEMON_ONLY" = 1 ] || exit 99
+printf '%s %s\n' "$MU300_AT_DIR" "$*" >> "$STUBLOG/at-calls"
+case "$MU300_AT_DIR:$*" in
+ /run/mu300-at:*'AT+SPACTCARD=0;+CGATT?'|/run/mu300-at4:*'AT+SPACTCARD=1;+CGATT?') ;;
+ *) exit 98;;
+esac
+printf '+CGATT: %s\\n' "${ATTACHED:-1}"
+""")
+        self.stub('cat',"""case "$1" in
+ */sipa_dele_wait)
+  echo wait >> "$STUBLOG/gate-calls"
+  [ "${GATE_FAIL:-0}" = 0 ] || exit 1
+  ;;
+esac
+exec /bin/cat "$@"
+""")
         self.stub('insmod','echo load >> "$STUBLOG/loads"; exit "${LOAD_FAIL:-0}"')
         self.stub('sleep','echo "$1" >> "$STUBLOG/sleeps"; echo "1.0 0" > "$STUBLOG/uptime"')
         source=(BIN/'sipa-dele-start').read_text()
         source=source.replace('/lib/modules/$(uname -r)',str(self.tmp/'modules'))
         source=source.replace('/proc/modules',str(self.tmp/'loaded-modules')).replace('/proc/uptime',str(self.tmp/'uptime'))
         source=source.replace('/dev/stty_nr1',str(self.tmp/'tty')).replace('[ -c ','[ -f ')
-        for command in ['mu300-at','insmod','dmesg','sleep']:
+        for command in ['mu300-at','insmod','dmesg','sleep','cat']:
             source=source.replace(command+' ',str(self.stubs/command)+' ')
+        source=source.replace('${MU300_SIM_ENV_LIB:-/opt/mu300/bin/mu300-sim-env}',str(BIN/'mu300-sim-env'))
+        source=source.replace('${MU300_DELE_SYSFS:-/sys/bus/platform/drivers/sipa_delegate}',str(self.tmp/'sysfs'))
         self.code=source
 
     def run_delegate(self,shell,**env):
-        for name in ['loads','sleeps']:(self.tmp/name).unlink(missing_ok=True)
+        for name in ['loads','sleeps','at-calls','gate-calls','dmesg-calls']:(self.tmp/name).unlink(missing_ok=True)
         (self.tmp/'uptime').write_text('0.0 0')
         return self.sh(shell,self.code,MU300_DELE_WAIT=1,**env)
 
@@ -132,10 +153,50 @@ class DelegateReadiness(ShellTest):
             self.assertEqual(p.returncode,0,p.stderr)
             self.assertEqual((self.tmp/'loads').read_text().splitlines(),['load'])
             self.assertFalse((self.tmp/'sleeps').exists())
+            self.assertFalse((self.tmp/'dmesg-calls').exists())
+            self.assertEqual((self.tmp/'gate-calls').read_text().splitlines(),['wait'])
 
     def test_no_packet_attach_never_loads_and_load_failure_is_not_success(self):
         for shell in self.each_shell():
             p=self.run_delegate(shell,ATTACHED=0)
             self.assertNotEqual(p.returncode,0);self.assertFalse((self.tmp/'loads').exists())
             p=self.run_delegate(shell,LOAD_FAIL=1)
-            self.assertNotEqual(p.returncode,0);self.assertNotIn('channel open sent',p.stdout)
+            self.assertNotEqual(p.returncode,0);self.assertNotIn('channel and resource callbacks ready',p.stdout)
+
+    def test_sim2_attach_uses_sim2_owner_and_explicit_scope(self):
+        for shell in self.each_shell():
+            p=self.run_delegate(shell,MU300_SIM_SLOT=1)
+            self.assertEqual(p.returncode,0,p.stderr)
+            self.assertIn('/run/mu300-at4', (self.tmp/'at-calls').read_text())
+            self.assertIn('AT+SPACTCARD=1;+CGATT?',(self.tmp/'at-calls').read_text())
+            self.assertNotIn('SPACTCARD=0',(self.tmp/'at-calls').read_text())
+
+    def test_failed_or_missing_handshake_is_not_success(self):
+        for shell in self.each_shell():
+            p=self.run_delegate(shell,GATE_FAIL=1)
+            self.assertNotEqual(p.returncode,0)
+            self.assertIn('handshake not ready',p.stdout)
+            node=self.tmp/'sysfs/cp/sipa_dele_wait'
+            node.rename(node.with_suffix('.saved'))
+            p=self.run_delegate(shell)
+            self.assertNotEqual(p.returncode,0)
+            self.assertIn('matching delegate module required',p.stdout)
+            node.with_suffix('.saved').rename(node)
+
+    def test_loaded_module_still_requires_handshake_but_no_more_at(self):
+        for shell in self.each_shell():
+            (self.tmp/'loaded-modules').write_text('sipa_dele 123 0\n')
+            for fail in (0,1):
+                p=self.run_delegate(shell,GATE_FAIL=fail)
+                self.assertEqual(p.returncode==0,fail==0,p.stderr)
+                self.assertFalse((self.tmp/'loads').exists())
+                self.assertFalse((self.tmp/'at-calls').exists())
+            (self.tmp/'loaded-modules').write_text('')
+
+    def test_invalid_handshake_value_is_not_success(self):
+        for shell in self.each_shell():
+            node=self.tmp/'sysfs/cp/sipa_dele_wait'
+            for value in ('0\n','2\n','-19\n',''):
+                node.write_text(value)
+                self.assertNotEqual(self.run_delegate(shell).returncode,0)
+            node.write_text('1\n')

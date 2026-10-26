@@ -23,11 +23,41 @@ M=/lib/modules/$(uname -r)
 KO=$M/sipa-dele.ko
 [ -f "$KO" ] || KO=$M/extra/sipa-dele.ko   # the Ubuntu image keeps modules under extra/
 WAIT=${MU300_DELE_WAIT:-180}
+SYSFS=${MU300_DELE_SYSFS:-/sys/bus/platform/drivers/sipa_delegate}
 
 log() { echo "sipa-dele-start: $*"; }
 
-grep -q '^sipa_dele ' /proc/modules && { log "already loaded"; exit 0; }
+delegate_ready() {
+    local candidate node= count=0 state
+    for candidate in "$SYSFS"/*/sipa_dele_wait; do
+        [ -r "$candidate" ] || continue
+        node=$candidate; count=$((count + 1))
+    done
+    [ "$count" = 1 ] || {
+        log 'missing or ambiguous kernel readiness interface; matching delegate module required'
+        return 1
+    }
+    # This read waits on a kernel waitqueue, not a dmesg string or a sleep.
+    # The kernel returns immediately when ready, or reports open failure /
+    # interruption / a three-second pending-handshake timeout explicitly.
+    state=$(cat "$node") || {
+        log "delegate handshake not ready (status: $(cat "${node%/*}/sipa_dele_ready" 2>/dev/null))"
+        return 1
+    }
+    [ "$state" = 1 ] || { log 'invalid delegate readiness response'; return 1; }
+    log 'delegate channel and resource callbacks ready'
+}
+
+if grep -q '^sipa_dele ' /proc/modules; then
+    delegate_ready
+    exit $?
+fi
 [ -f "$KO" ] || { log "no $KO (a kernel without the modem stack)"; exit 0; }
+
+# The data SIM may be SIM2 while SIM1 is absent or detached. Use its existing
+# shared owner and an explicit card prefix, never the default slot-0 context.
+. "${MU300_SIM_ENV_LIB:-/opt/mu300/bin/mu300-sim-env}" || exit 1
+mu300_sim_env "${MU300_SIM_SLOT:-}" || { log 'invalid data SIM configuration'; exit 1; }
 
 # What counts as "the CP is talking" has to be the modem answering, not a log line on the way there.
 #
@@ -41,13 +71,14 @@ grep -q '^sipa_dele ' /proc/modules && { log "already loaded"; exit 0; }
 # data side of the CP exists, so gating on it reproduces the same "modem is up after 2s" as the sbuf lines.
 #
 # AT+CGATT? is the signal that means what we need. 1 is the modem attached to the *packet* domain - the part
-# that carries data - so it cannot be true before the CP's data path is running. The sbuf line stays as a cheap
-# precondition so we do not open the AT channel before it exists.
+# that carries data. Query it only through the selected SIM's existing owner;
+# no kernel-log line substitutes for packet attachment or channel readiness.
 modem_up() {
-    dmesg | grep -qE 'sprd-sbuf: channel 5-|sbuf ready for pmic wdt init' || return 1
     [ -c /dev/stty_nr1 ] || return 1
     # The channel owner must be ready; this probe never opens a raw tty.
-    MU300_AT_DAEMON_ONLY=1 mu300-at -t 8 'AT+CGATT?' 2>/dev/null | grep -q '+CGATT: *1'
+    MU300_AT_DAEMON_ONLY=1 MU300_AT_DIR="$MU300_SIM_SHARED" \
+        mu300-at -t 8 "AT+SPACTCARD=$MU300_SIM_SLOT;+CGATT?" 2>/dev/null |
+        grep -qE '^\+CGATT:[[:space:]]*1[[:space:]]*$'
 }
 
 uptime_s() { local value=; read -r value _ < /proc/uptime; printf '%s\n' "${value%%.*}"; }
@@ -60,17 +91,8 @@ while [ "$(( $(uptime_s)-start ))" -lt "$WAIT" ]; do
             exit 1
         fi
         log "loaded sipa-dele"
-        # Both halves of the handshake are pr_info, so this says immediately whether it took.
-        for probe in $(seq 1 30); do
-            dmesg | grep -q 'channel 5-120 send open msg' && break
-            sleep 0.1
-        done
-        if dmesg | grep -q 'channel 5-120 send open msg'; then
-            log "channel open sent; handshake: $(dmesg | grep -c sipa_dele) sipa_dele messages so far"
-        else
-            log "no 'channel 5-120 send open msg' in dmesg - the delegate thread did not start"
-        fi
-        exit 0
+        delegate_ready
+        exit $?
     fi
     sleep 0.5
 done

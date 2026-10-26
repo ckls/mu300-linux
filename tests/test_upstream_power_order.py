@@ -64,28 +64,38 @@ int main(void) {
 #define SIPA_RM_RES_CONS_WIFI_UL 1
 #define SIPA_RM_RES_CONS_WIFI_DL 2
 #define kzalloc(n,f) calloc(1,n)
-struct sipa_delegator_create_params { void *pdev; };
-struct delegate { void *pdev; void (*on_cmd)(void); void (*local_request_prod)(void);
- bool pd_eb_flag,pd_get_flag; int smsg_cnt,prod_id; };
+#define kfree(p) free(p)
+struct device { int kobj; };
+struct sipa_delegator_create_params { struct device *pdev; };
+struct delegate { struct device *pdev; void (*on_cmd)(void); void (*local_request_prod)(void);
+ bool pd_eb_flag,pd_get_flag; int smsg_cnt,prod_id,channel_status,channel_wait; };
 struct wrapper { struct delegate delegator; };
 static struct wrapper *s_cp_delegator;
-static int enabled, starts, failure, init_failure;
+static int enabled, starts, failure, init_failure, sysfs_failure, sysfs_ready, exits, removals;
+static const int sipa_dele_groups[1];
 static void cp_dele_on_commad(void) {}
 static void cp_dele_local_req_r_prod(void) {}
 static int sipa_delegator_init(struct delegate *d,struct sipa_delegator_create_params *p) { d->pdev=p->pdev;return init_failure; }
 static void pm_runtime_enable(void *p) { assert(!enabled);enabled=1; }
 static void pm_runtime_disable(void *p) { assert(enabled);enabled=0; }
-static int sipa_delegator_start(struct delegate *d) { assert(enabled);starts++;return failure; }
+static int sipa_delegator_start(struct delegate *d) { assert(enabled&&sysfs_ready);starts++;return failure; }
 static int sipa_rm_add_dependency(int a,int b) { return 0; }
-static void sipa_dele_init_sysfs(struct wrapper *w) {}
+static int sipa_dele_init_sysfs(struct wrapper *w) { sysfs_ready=!sysfs_failure;return sysfs_failure; }
+static void sysfs_remove_groups(int *kobj,const int *groups) { removals++;sysfs_ready=0; }
+static void atomic_set(int *value,int next) { *value=next; }
+static void wake_up_interruptible_all(int *wait) { assert(s_cp_delegator->delegator.channel_status==failure); }
+static void sipa_delegator_exit(struct delegate *d) { exits++; }
 #define dev_warn(...) ((void)0)
 '''
         self.compile_run(stub+function(source,'cp_delegator_init')+r'''
 int main(void) {
- struct sipa_delegator_create_params p={0};
+ struct device dev={0};struct sipa_delegator_create_params p={&dev};
  assert(!cp_delegator_init(&p));assert(enabled&&starts==1);free(s_cp_delegator);
- enabled=0;failure=-5;assert(cp_delegator_init(&p)==-5);assert(!enabled&&starts==2);free(s_cp_delegator);
- init_failure=-6;assert(cp_delegator_init(&p)==-6);assert(!enabled&&starts==2);free(s_cp_delegator);
+ enabled=0;failure=-5;assert(cp_delegator_init(&p)==-5);assert(!enabled&&starts==2);
+ assert(!s_cp_delegator&&exits==1&&removals==1);
+ init_failure=-6;assert(cp_delegator_init(&p)==-6);assert(!enabled&&starts==2&&!s_cp_delegator);
+ init_failure=0;sysfs_failure=-7;assert(cp_delegator_init(&p)==-7);
+ assert(!enabled&&starts==2&&!s_cp_delegator&&exits==2&&removals==1);
  return 0;
 }
 ''')

@@ -116,6 +116,10 @@ def check(out):
         vermagic = re.search(rb'vermagic=([^\s\x00]+)', (out / name).read_bytes())
         if not vermagic or vermagic[1] != version[1]:
             raise ValueError(f'{name} vermagic does not match Image')
+    delegate = out / 'modules/sipa-dele.ko'
+    if not delegate.is_file() or any(marker not in delegate.read_bytes() for marker in
+                                    (b'sipa_dele_wait\x00', b'sipa_dele_ready\x00')):
+        raise ValueError('sipa-dele.ko lacks the kernel handshake readiness ABI; rebuild modem modules')
     runpy.run_path(str(Path(__file__).with_name('audit-bundle.py')))['audit'](out)
     normalized = {name.replace('-', '_') for name in files}
     if len(normalized) != len(files):

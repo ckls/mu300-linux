@@ -32,23 +32,28 @@ class RegistrationScope(ShellTest):
     def test_procd_env_is_a_single_table_per_instance(self):
         # procd_set_param env creates an object, it does not append to one.
         from helpers import TOP
-        source = (TOP / 'openwrt/overlay/etc/init.d/mu300-atd').read_text()
+        # Native modemd owns all brokers now; the removed shell-daemon
+        # per-channel environment is no longer the production interface.
+        source = (BIN.parent / 'lib/modemd-service.sh').read_text().replace(
+            '/opt/mu300/bin/mu300-device', 'mu300-device')
         code = source + '''
 procd_open_instance() { instance=$1; env_count=0; }
 procd_set_param() {
     [ "$1" != env ] || { env_count=$((env_count+1)); [ "$env_count" = 1 ] || exit 12; }
-    if [ "$instance" = atd4 ] && [ "$1" = env ]; then printf '%s\n' "$@"; fi
+    if [ "$instance" = modemd ] && [ "$1" = env ]; then printf '%s\n' "$@"; fi
 }
+procd_append_param() { printf '%s\n' "$@"; }
 procd_close_instance() { :; }
-start_service
+mu300_sms_pool() { echo '/custom sms/pool'; }
+modemd_single_layout
 '''
         self.stub('uci', 'case "$*" in *sim_slots*) echo 2 ;; *) exit 1 ;; esac')
+        self.stub('mu300-device', 'echo u30air')
         for shell in self.each_shell():
             r = self.sh(shell, code)
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn('MU300_AT_DIR=/run/mu300-at4', r.stdout)
-            self.assertIn('MU300_AT_URC_CHANNELS=3', r.stdout)
-            self.assertIn('MU300_SMS_POOL=/etc/mu300/sms/sim1', r.stdout)
+            self.assertIn('dev=/dev/stty_nr4,dir=/run/mu300-at4,urc=3,', r.stdout)
+            self.assertEqual(r.stdout.count('MU300_SMS_POOL=/custom sms/pool'), 1)
 
     def test_cancel_pending_registration_does_not_send_more_at(self):
         source=(BIN/'mobile-data').read_text()

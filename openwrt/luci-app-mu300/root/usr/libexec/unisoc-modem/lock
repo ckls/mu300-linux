@@ -167,7 +167,7 @@ auto_work_mode() {
     value=$(cfg auto_work_mode)
     case "$value" in 134|152) printf '%s\n' "$value"; return;; esac
     value=$(cfg auto_work_mode_default)
-    case "$value" in 152) echo 152;; *) echo 134;; esac
+    case "$value" in 134) echo 134;; *) echo 152;; esac
 }
 mode_pair() {  # mode_pair LABEL -> "workmode gran"  (encode per ufi_tools modeConfigForSlot0)
     case $1 in

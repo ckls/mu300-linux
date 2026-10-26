@@ -16,11 +16,23 @@ if [ "$2" = get ]; then
  *.platform_defaults) echo "${TEST_DEFAULTS:-}" ;;
  *.data_sim) echo "${TEST_DATA_SIM-0}" ;;
  *.sim_slots) echo "${TEST_SLOTS:-1}" ;;
+ *.auto_work_mode_default) echo "${TEST_AUTO_DEFAULT:-152}" ;;
  network.wan.sim_slot) echo "${TEST_LEGACY_SLOT:-}" ;;
  esac
 elif [ "$2" = batch ]; then cat > "$STUBLOG/batch"
 elif [ "$2" = set ] || [ "$2" = commit ]; then echo "$*" >> "$STUBLOG/direct"; fi
 ''')
+
+    def test_all_board_defaults_migrate_to_152_without_rewriting_user_override(self):
+        for shell in self.each_shell():
+            for model in ('f50','v50','u30air'):
+                p=self.tmp/'direct';p.unlink(missing_ok=True)
+                r=self.script(shell,SCRIPT,TEST_DEVICE=model,TEST_DEFAULTS=model,TEST_AUTO_DEFAULT='134')
+                self.assertEqual(r.returncode,0,r.stderr)
+                writes=p.read_text()
+                self.assertIn('auto_work_mode_default=152',writes)
+                self.assertNotIn('auto_work_mode=',writes)
+                self.assertNotIn('data_sim=',writes)
 
     def test_initial_defaults_and_same_board_preferences(self):
         for shell in self.each_shell():

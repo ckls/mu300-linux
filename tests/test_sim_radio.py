@@ -10,10 +10,10 @@ SCRIPT=TOP/'rootfs/overlay/opt/mu300/bin/mu300-sim-radio'
 
 class SimRadio(ShellTest):
     def setUp(self):
-        super().setUp()
+        ShellTest.setUp(self)
         env=self.tmp/'sim-env'
         env.write_text('mu300_sim_env() { MU300_SIM_SLOT=${1:-0}; MU300_SIM_SHARED=slot$MU300_SIM_SLOT; export MU300_SIM_SLOT MU300_SIM_SHARED; }\n')
-        self.stub('uci','echo wan')
+        self.stub('uci','case "$3" in *.dual_standby) echo 1;; *) echo wan;; esac')
         self.stub('mu300-device','echo f50')
         self.stub('sync',':')
         self.stub('flock', '''exec python3 -c 'import fcntl,sys
@@ -73,7 +73,7 @@ esac''')
     def test_missing_policy_defaults_sim2_off_and_keeps_saved_sim2_selection(self):
         for shell in self.each_shell():
             (self.tmp/'sim-radio-policy').unlink(missing_ok=True)
-            self.stub('uci','case "$3" in *.sim_slots) echo 2;; *.data_sim) echo "${SAVED_DATA_SIM:-0}";; *) echo wan;; esac')
+            self.stub('uci','case "$3" in *.dual_standby) echo 1;; *.sim_slots) echo 2;; *.data_sim) echo "${SAVED_DATA_SIM:-0}";; *) echo wan;; esac')
             view=json.loads(self.call(shell,'get').stdout)
             self.assertEqual(view['enabled'],[1,0])
             view=json.loads(self.call(shell,'get',SAVED_DATA_SIM='1').stdout)

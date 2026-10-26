@@ -14,6 +14,7 @@ query() {
 ok() { query "$1" "$2" "${3:-4}" | grep -qx OK; }
 cfun() { query "$1" 'AT+CFUN?' | sed -n 's/^+CFUN: *\([0124]\)$/\1/p'; }
 fail() { echo "dual-radio: $*" >&2; exit 1; }
+absent_pin() { printf '%s\n' "$1" | grep -qxE '\+CME ERROR: (10|SIM not inserted)'; }
 # Do not close or steal the old NR3 owner on a live system. Configuration
 # migration requires a clean reboot. The drainer announces readiness on open.
 [ ! -p "$root/mu300-at3/cmd" ] || fail 'NR3 is still a command owner; reboot required'
@@ -22,16 +23,34 @@ for stream in "$root/mu300-at/urc/stty_nr0.ready" "$root/mu300-at4/urc/stty_nr3.
     [ -n "$reader" ] && kill -0 "$reader" 2>/dev/null || fail 'URC reader not ready'
 done
 present0=1; present1=1
+prepared0=0; prepared1=0
+model=$(mu300-device 2>/dev/null)
 for card in 0 1; do
     pin=$(query "$card" 'AT+CPIN?')
-    case "$pin" in
-        *'+CME ERROR: 10'*) [ "$card" != 0 ] && present1=0 || present0=0 ;;
-        *'+CPIN:'*) ;;
-        *) fail "SIM $card presence unreadable" ;;
-    esac
+    # The previous U30 preflight powered the SIM before deciding absence: an
+    # inserted, unpowered U30 SIM also returns CME 10. Only repair this cold
+    # ambiguity, never cycle a live/initialized stack or infer it on F50/V50.
+    # Reuse this SFUN=2 in the later cold plan; no duplicate power command,
+    # extra polling or radio reset is added. Busy/failed replies end the round.
+    if [ "$model" = u30air ] && [ ! -e "$root/mu300-dual-radio-ready" ] && absent_pin "$pin"; then
+        state=$(cfun "$card")
+        case "$state" in
+            0|2)
+                ok "$card" 'AT+SFUN=2' 10 || fail "SIM $card presence power-on rejected"
+                if [ "$card" = 0 ]; then prepared0=1; else prepared1=1; fi
+                pin=$(query "$card" 'AT+CPIN?') ;;
+            1) ;; # A live stack has already powered its SIM.
+            *) fail "SIM $card power state unavailable for presence check" ;;
+        esac
+    fi
+    if absent_pin "$pin"; then
+        [ "$card" != 0 ] && present1=0 || present0=0
+    else
+        case "$pin" in *'+CPIN:'*) ;; *) fail "SIM $card presence unreadable" ;; esac
+    fi
     if [ -x /opt/mu300/bin/v50-led-status ]; then
         state=present
-        case "$pin" in *'+CME ERROR: 10'*) state=absent ;; esac
+        if absent_pin "$pin"; then state=absent; fi
         /opt/mu300/bin/v50-led-status sim-presence "$card" "$state" 2>/dev/null || :
     fi
 done
@@ -114,6 +133,9 @@ pair=$(printf '%s' "$modes" | cut -d, -f1-2)
 # and lock replay; T551M-specific NR locks must never be forced onto an F50.
 for card in 0 1; do
     present "$card" || continue
+    # U30's presence preflight may have completed this exact SIM-power step.
+    if [ "$card" = 0 ]; then prepared=$prepared0; else prepared=$prepared1; fi
+    [ "$prepared" != 1 ] || continue
     ok "$card" 'AT+SFUN=2' || fail "SIM $card power-on rejected"
 done
 for card in 1 0; do

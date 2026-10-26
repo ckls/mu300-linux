@@ -388,6 +388,7 @@ do_list() {
 	"data_sim_status": { "id": "String" },
 	"sim_radio_get": { },
 	"sim_radio_set": { "slot": "String", "enabled": false, "confirm": false },
+	"sim_dsds_set": { "enabled": false, "confirm": false },
 	"sim_radio_status": { "id": "String" },
 	"status": { "slot": "String" },
 	"rates": { },
@@ -470,6 +471,12 @@ call)
         data_sim_set) "$DASH/data-sim" start "$(inp '@.target')" ;;
         data_sim_status) "$DASH/data-sim" status "$(inp '@.id')" ;;
         sim_radio_get) /opt/mu300/bin/mu300-sim-radio get ;;
+        sim_dsds_set)
+            case "$(inp '@.enabled'):$(inp '@.confirm')" in
+                true:true) "$DASH/data-sim" start dsds-1;;
+                false:true) "$DASH/data-sim" start dsds-0;;
+                *) printf '{"ok":0,"error":"Invalid radio request"}\n';;
+            esac;;
         sim_radio_set)
             slot=$(inp '@.slot'); enabled=$(inp '@.enabled'); confirmed=$(inp '@.confirm')
             case "$slot:$enabled:$confirmed" in

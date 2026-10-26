@@ -5,6 +5,12 @@ export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
 device=$(mu300-device 2>/dev/null)
 case $device in f50|v50|u30air) slots=2 ;; *) exit 1 ;; esac
 [ "$(uci -q get unisoc_modem.main)" = core ] || exit 0
+# Firmware-owned default is shared by all models. The explicit selector is
+# user-owned, so upgrading the default must never rewrite auto_work_mode.
+if [ "$(uci -q get unisoc_modem.main.auto_work_mode_default)" != 152 ]; then
+    uci -q set unisoc_modem.main.auto_work_mode_default=152 &&
+        uci -q commit unisoc_modem || exit 1
+fi
 previous=$(uci -q get unisoc_modem.main.platform_defaults)
 # Keep a legacy F50 internal-SIM selection. Slot capability does not imply
 # that an internal card is fitted; the radio initializer checks presence.

@@ -50,7 +50,7 @@ return baseclass.extend({
             if(loaded) return Promise.resolve();
             status.textContent=M.translate('正在读取兼容性设置…');
             return get('unisoc_modem','main').then(values=>{
-                const fallback=values.auto_work_mode_default==='152'?'152':'134';
+                const fallback=values.auto_work_mode_default==='134'?'134':'152';
                 const labels={
                     '134':M.translate('全制式自动（134，含 2G）'),
                     '152':M.translate('自动选网（152，不含 2G）')

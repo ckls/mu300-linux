@@ -9,6 +9,7 @@ class U30Adapter(ShellTest):
     def setUp(self):
         shared.DataSim.setUp(self)
         self.stub('mu300-device', 'echo u30air')
+        self.extra['TEST_DSDS']='1'
         (self.tmp/'sim-radio-policy').write_text('1 1\n')
     reset = shared.DataSim.reset
     run_switch = shared.DataSim.run_switch
@@ -46,14 +47,16 @@ class U30Adapter(ShellTest):
             self.assertNotIn('ifdown',(self.tmp/'commands').read_text())
             self.assertEqual((self.tmp/'sim-radio-policy').read_text(),'1 0\n')
 
-    def test_default_rf_policy_is_both_on_but_saved_choices_win(self):
+    def test_single_standby_default_and_explicit_dual_standby_policies(self):
         policy=self.tmp/'sim-radio-policy'
+        self.reset()
         for shell in self.each_shell():
             policy.unlink(missing_ok=True)
-            self.assertEqual(self.script(shell,BIN/'mu300-radio-allowed','--flags').stdout.strip(),'1 1')
+            self.assertEqual(self.script(shell,BIN/'mu300-radio-allowed','--flags').stdout.strip(),'1 0')
             for flags in ('0 0','0 1','1 0','1 1'):
                 policy.write_text(flags+'\n')
-                self.assertEqual(self.script(shell,BIN/'mu300-radio-allowed','--flags').stdout.strip(),flags)
+                self.assertEqual(self.script(shell,BIN/'mu300-radio-allowed','--flags',TEST_DSDS='1').stdout.strip(),flags)
+                self.assertEqual(self.script(shell,BIN/'mu300-radio-allowed','--flags',TEST_DSDS='0').stdout.strip(),'1 0' if flags=='1 1' else flags)
 
     def test_failed_route_or_storage_restores_old_selection(self):
         for shell in self.each_shell():

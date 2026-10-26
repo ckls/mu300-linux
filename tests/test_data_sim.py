@@ -28,7 +28,7 @@ def save(): f.write_text(json.dumps(s))
 if name=='uci':
  if a[:2]==['-q','get']:
   k=a[2].split('.')[-1]
-  print({'data_sim':s['saved'],'sim_slots':s.get('slots',2),'data_interface':'wan'}.get(k,''))
+  print({'data_sim':s['saved'],'sim_slots':s.get('slots',2),'data_interface':'wan','dual_standby':os.getenv('TEST_DSDS','')}.get(k,''))
  elif a[:2]==['-q','set']:
   s['saved']=int(a[2].split('=')[1]); save()
  elif a[:2]==['-q','commit'] and s.get('fail_commit'):
@@ -65,9 +65,68 @@ elif name=='jsonfilter':
         source=SCRIPT.read_text()
         shims='\n'.join(name+'() { "$STUBLOG/stubs/'+name+'" "$@"; }' for name in ('ifdown','ifup','sleep'))
         self.controller.write_text(source.replace('#!/bin/sh\n','#!/bin/sh\n'+shims+'\n',1))
-        self.extra=dict(MU300_SIM_ENV_LIB=self.envlib,MU300_SIM_MUTEX=self.tmp/'mutex',MU300_DUAL_READY=self.tmp/'ready',MU300_DATA_SIM_ACTUAL=self.tmp/'actual')
+        self.extra=dict(MU300_SIM_ENV_LIB=self.envlib,MU300_SIM_MUTEX=self.tmp/'mutex',MU300_DUAL_READY=self.tmp/'ready',MU300_DATA_SIM_ACTUAL=self.tmp/'actual',TEST_DSDS='1')
         self.stub('radio-control','[ "$*" = "--switch-enable 1 1" ] || exit 2; [ "${FAIL_RADIO_ENABLE:-0}" != 1 ] || exit 1; printf "1 1\\n" > "$UNISOC_RADIO_POLICY"; echo enable-sim2 >> "$STUBLOG/commands"')
         self.extra['MU300_RADIO_CONTROL']=self.stubs/'radio-control'
+
+    def u30_radio_fixture(self):
+        self.extra['TEST_DSDS']='0'
+        self.stub('mu300-device','echo "${TEST_SINGLE_MODEL:-'+getattr(self,'single_model','u30air')+'}"')
+        self.stub('radio-control','''
+case "$1:$2:$3" in --switch-policy:[01]:[01]) ;; *) exit 2;; esac
+echo "radio $2 $3" >> "$STUBLOG/commands"
+[ "${FAIL_RADIO_ENABLE:-0}:$3" != 1:1 ] || exit 1
+flags=$(cat "$UNISOC_RADIO_POLICY")
+if [ "$3" = 1 ]; then
+    if [ "$2" = 0 ]; then flags='1 0'; else flags='0 1'; fi
+elif [ "$2" = 0 ]; then flags="0 ${flags#* }"; else flags="${flags% *} 0"; fi
+printf '%s\\n' "$flags" > "$UNISOC_RADIO_POLICY"
+''')
+
+    def test_u30_single_standby_switch_and_reverse_are_explicit_rf_opt_ins(self):
+        self.u30_radio_fixture()
+        for shell in self.each_shell():
+            self.reset()
+            (self.tmp/'sim-radio-policy').write_text('1 0\n')
+            for target in ('1','0'):
+                r=self.run_switch(shell,target)
+                self.assertEqual(r.returncode,0,r.stderr)
+                state=json.loads(self.db.read_text())
+                self.assertEqual((state['saved'],state['actual']),(int(target),int(target)))
+                self.assertEqual((self.tmp/'sim-radio-policy').read_text().strip(),'0 1' if target=='1' else '1 0')
+            commands=(self.tmp/'commands').read_text()
+            self.assertLess(commands.index('ifdown'),commands.index('radio 1 1'))
+
+    def test_u30_failed_switch_restores_original_or_both_off_permissions(self):
+        self.u30_radio_fixture()
+        for shell in self.each_shell():
+            for flags in ('1 0','0 0'):
+                self.reset(fail_switch=True)
+                (self.tmp/'sim-radio-policy').write_text(flags+'\n')
+                r=self.run_switch(shell,'1')
+                self.assertNotEqual(r.returncode,0)
+                self.assertIn('sim_switch_failed_restored',r.stderr)
+                self.assertEqual((self.tmp/'sim-radio-policy').read_text().strip(),flags)
+                self.assertEqual(json.loads(self.db.read_text())['saved'],0)
+
+    def test_u30_manual_data_off_stays_off_and_missing_sim_does_not_change_rf(self):
+        self.u30_radio_fixture()
+        for shell in self.each_shell():
+            self.reset(autostart=False,up=False)
+            (self.tmp/'sim-radio-policy').write_text('0 0\n')
+            r=self.run_switch(shell,'1')
+            self.assertEqual(r.returncode,0,r.stderr)
+            self.assertNotIn('ifup',(self.tmp/'commands').read_text())
+            self.reset(absent_target=True)
+            (self.tmp/'sim-radio-policy').write_text('1 0\n')
+            self.assertNotEqual(self.run_switch(shell,'1').returncode,0)
+            self.assertNotIn('radio ',(self.tmp/'commands').read_text())
+
+    def test_f50_single_standby_switch_failure_and_data_off_follow_same_policy(self):
+        self.single_model='f50'
+        self.test_u30_single_standby_switch_and_reverse_are_explicit_rf_opt_ins()
+        self.test_u30_failed_switch_restores_original_or_both_off_permissions()
+        self.test_u30_manual_data_off_stays_off_and_missing_sim_does_not_change_rf()
 
     def test_first_switch_to_sim2_remembers_rf_opt_in(self):
         for shell in self.each_shell():

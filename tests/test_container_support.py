@@ -32,6 +32,8 @@ class ContainerSupport(unittest.TestCase):
         for name in support.MODULES.values():
             (self.out / 'modules' / f'{name}.ko').write_bytes(name.encode() + b'\0vermagic=6.18.54 SMP\0')
         (self.out / 'modules/dependency.ko').write_bytes(b'needed dependency\0vermagic=6.18.54 SMP\0')
+        (self.out / 'modules/sipa-dele.ko').write_bytes(
+            b'vermagic=6.18.54 SMP\0sipa_dele_wait\0sipa_dele_ready\0')
         self.write_config()
         (self.out / 'modules.in-tree').write_text('\n'.join(p.name for p in (self.out / 'modules').glob('*.ko')) + '\n')
         self.manifests()
@@ -50,6 +52,12 @@ class ContainerSupport(unittest.TestCase):
 
     def test_complete_output_passes(self):
         support.check(self.out)
+
+    def test_old_delegate_without_readiness_cannot_ship_with_new_loader(self):
+        (self.out / 'modules/sipa-dele.ko').write_bytes(b'vermagic=6.18.54 SMP\0')
+        self.manifests()
+        with self.assertRaisesRegex(ValueError, 'handshake readiness ABI'):
+            support.check(self.out)
 
     def test_config_without_kvm_cannot_ship(self):
         self.config['KVM'] = 'n'

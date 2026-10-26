@@ -4,34 +4,57 @@
 set -eu
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 policy=${UNISOC_RADIO_POLICY:-/etc/mu300/sim-radio}
+supports_dsds() { case "$(mu300-device)" in f50|u30air) return 0;; *) return 1;; esac; }
 read_policy() {
     flags=$("${MU300_RADIO_ALLOWED:-/opt/mu300/bin/mu300-radio-allowed}" --flags) || {
         echo 'Invalid saved SIM radio policy' >&2; exit 1;
     }
     case "$flags" in '0 0'|'0 1'|'1 0'|'1 1') ;; *) echo 'Invalid saved SIM radio policy' >&2; exit 1;; esac
 }
+save_policy() {
+    mkdir -p "$(dirname "$policy")"
+    umask 022
+    printf '%s\n' "$flags" > "$policy.new.$$"
+    mv "$policy.new.$$" "$policy"
+    sync -f "$policy" 2>/dev/null || true
+}
 case ${1:-} in
 get)
     read_policy
     second=false
     [ "$(uci -q get unisoc_modem.main.sim_slots 2>/dev/null)" != 2 ] || second=true
-    printf '{"ok":1,"enabled":[%s,%s],"supported":[true,%s]}\n' "${flags% *}" "${flags#* }" "$second"
+    dsds_supported=false; dsds=false
+    if supports_dsds; then
+        dsds_supported=true
+        [ "$("${MU300_RADIO_ALLOWED:-/opt/mu300/bin/mu300-radio-allowed}" --dsds)" != 1 ] || dsds=true
+    fi
+    printf '{"ok":1,"enabled":[%s,%s],"supported":[true,%s],"dsds_supported":%s,"dsds_enabled":%s}\n' "${flags% *}" "${flags#* }" "$second" "$dsds_supported" "$dsds"
     exit 0;;
+dsds|--dsds-locked)
+    supports_dsds || { echo dsds_unsupported >&2; exit 1; }
+    case ${2:-} in 0|1) dsds=$2;; *) exit 2;; esac;;
 --switch-enable)
     # Internal call from a validated data-card switch while its switch/native
     # gate is already held. RF mutations still use mobile-data's radio mutex.
-    [ "${2:-}:${3:-}" = 1:1 ] || exit 2
-    slot=1; enabled=1;;
+    case ${2:-}:${3:-} in
+        1:1) ;;
+        0:1) supports_dsds || exit 2;;
+        *) exit 2;;
+    esac
+    slot=$2; enabled=1;;
+--switch-policy)
+    supports_dsds || exit 2
+    case ${2:-}:${3:-} in 0:0|0:1|1:0|1:1) slot=$2; enabled=$3;; *) exit 2;; esac;;
 apply|--locked)
     case ${2:-}:${3:-} in 0:0|0:1|1:0|1:1) slot=$2; enabled=$3;; *) exit 2;; esac;;
 *) exit 2;;
 esac
-if [ "$1" != --locked ]; then
-  if [ "$1" = apply ]; then
+if [ "$1" != --locked ] && [ "$1" != --dsds-locked ]; then
+  if [ "$1" = apply ] || [ "$1" = dsds ]; then
     # Native switching uses this lock from preflight through route/boot-policy
     # completion. Share it before the RF mutex so permissions cannot change
     # halfway through that transaction or read an outdated active slot.
-    if [ "$(mu300-device)" = u30air ]; then
+    if supports_dsds; then
         native_lock=${MU300_SIM_CONTROL_LOCK:-/run/mu300/sim-control.lock}
         mkdir -p "$(dirname "$native_lock")"
         exec 9>"$native_lock"
@@ -44,6 +67,11 @@ if [ "$1" != --locked ]; then
     trap 'exit 143' INT TERM
     [ ! -d /run/unisoc-modem-lock-apply ] || { echo modem_busy >&2; exit 1; }
   fi
+    if [ "$1" = dsds ]; then
+        rc=0
+        /opt/mu300/bin/mobile-data radio-dsds "$dsds" || rc=$?
+        exit "$rc"
+    fi
     rc=0
     /opt/mu300/bin/mobile-data radio-policy "$slot" "$enabled" || rc=$?
     if [ "$rc" = 8 ]; then
@@ -60,13 +88,36 @@ if [ "$1" != --locked ]; then
     fi
     exit "$rc"
 fi
+if [ "$1" = --dsds-locked ]; then
+    read_policy
+    if [ "$dsds" = 0 ]; then
+        # Keep the sole active choice, or the data SIM when both were allowed.
+        case "$flags" in
+            '0 1') keep=1;;
+            '1 1') keep=$(uci -q get unisoc_modem.main.data_sim); [ "$keep" = 1 ] || keep=0;;
+            *) keep=0;;
+        esac
+        sh "$0" --locked "$((1-keep))" 0 || exit 1
+    else
+        # Materialize the effective single-standby choice before lifting the
+        # restriction, so a legacy raw "1 1" cannot spring back automatically.
+        save_policy
+    fi
+    uci -q set "unisoc_modem.main.dual_standby=$dsds" && uci -q commit unisoc_modem || {
+        uci -q revert unisoc_modem.main.dual_standby
+        echo storage_failed >&2; exit 1;
+    }
+    exit 0
+fi
+if [ "$enabled" = 1 ] && supports_dsds &&
+   [ "$("${MU300_RADIO_ALLOWED:-/opt/mu300/bin/mu300-radio-allowed}" --dsds)" = 0 ]; then
+    # The caller already holds the switch/radio locks. Confirm peer RF
+    # off before enabling this stack; a failed close must never enable both.
+    sh "$0" --locked "$((1-slot))" 0 || exit 1
+fi
 read_policy
 if [ "$slot" = 0 ]; then flags="$enabled ${flags#* }"; else flags="${flags% *} $enabled"; fi
-mkdir -p "$(dirname "$policy")"
-umask 022
-printf '%s\n' "$flags" > "$policy.new.$$"
-mv "$policy.new.$$" "$policy"
-sync -f "$policy" 2>/dev/null || true
+save_policy
 . /opt/mu300/bin/mu300-sim-env
 mu300_sim_env
 own=$MU300_SIM_SLOT
