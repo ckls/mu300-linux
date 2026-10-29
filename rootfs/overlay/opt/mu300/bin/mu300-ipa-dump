@@ -84,10 +84,10 @@ echo
 echo "=== pushing traffic at $TARGET through $IFACE"
 # TCP, not ping. On this network ICMP does not come back even over a working link: measured on stock Android,
 # where data demonstrably works, "ping -I sipa_eth0 8.8.8.8" reports 100% loss - and that form binds to the
-# device, so it is the cellular path and not a VPN eating the echo. A ping-based test here reads "nothing
+# device, so it is the cellular path and not a tunnel intercepting the echo. A ping-based test here reads "nothing
 # arrives" on a link that is fine, which is how this investigation lost time more than once.
 #
-# What answers the question is not whether the connect succeeds - it may well be carried by a VPN, and on
+# What answers the question is not whether the connect succeeds - it may well be carried by a tunnel, and on
 # Android it was - but whether rx_packets on this interface moves at all. Downlink is downlink whoever the
 # bytes belong to, and ours has never moved.
 src=$(ip -4 -br addr show "$IFACE" | awk '{print $3}' | cut -d/ -f1)

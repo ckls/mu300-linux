@@ -20,6 +20,16 @@ def append_once(path, marker, text):
     if marker not in s:
         open(p, 'w').write(s.rstrip('\n') + '\n' + text)
 
+append_once('drivers/ufs/host/Makefile', 'ufs-sprd-qogirn6pro.o',
+            'obj-$(CONFIG_SCSI_UFS_SPRD_QOGIRN6PRO) += ufs-sprd-qogirn6pro.o\n')
+append_once('drivers/ufs/host/Kconfig', 'config SCSI_UFS_SPRD_QOGIRN6PRO',
+            '\nconfig SCSI_UFS_SPRD_QOGIRN6PRO\n'
+            '\ttristate "Unisoc UMS9620/QogirN6Pro UFS controller"\n'
+            '\tdepends on SCSI_UFSHCD_PLATFORM && OF && ARCH_SPRD\n'
+            '\tdepends on COMMON_CLK && RESET_CONTROLLER && REGULATOR && NVMEM\n'
+            '\tselect MFD_SYSCON\n'
+            '\thelp\n\t  Original U30 Air UFS PHY and power sequence on mainline.\n')
+
 append_once('drivers/misc/Makefile', 'zte-v50-sim.o',
             'obj-$(CONFIG_ZTE_V50_SIM) += zte-v50-sim.o\n')
 append_once('drivers/misc/Kconfig', 'config ZTE_V50_SIM',

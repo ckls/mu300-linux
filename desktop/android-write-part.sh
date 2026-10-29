@@ -5,11 +5,12 @@ set -o pipefail
 P=${MU300_PAYLOAD_DIR:?};T=${MU300_INSTALL_TMP:?}
 . "$P/desktop-settings.env"
 . "$P/ext4-geometry.sh"
+. "$P/storage-lib.sh"
 dev=${1:?root device}; expected_cid=${2:?cid}; expected_sectors=${3:?size}; expected_sha=${4:?image checksum}
-node=${dev##*/};disk=${node%p*}
-case "$node" in mmcblk[0-9]p[0-9]*) ;; *) exit 1 ;; esac
+node=${dev##*/};disk=$(mu300_storage_parent "$node")
+case "$node" in mmcblk[0-9]*p[0-9]*|sd[a-z]*[0-9]) ;; *) exit 1 ;; esac
 grep -qx PARTNAME=mu300root "/sys/class/block/$node/uevent"
-[ "$(cat /sys/class/block/$disk/device/cid)" = "$expected_cid" ]
+[ "$(mu300_storage_identity "$disk")" = "$expected_cid" ]
 [ "$(cat /sys/class/block/$node/size)" = "$expected_sectors" ]
 [ -z "$(ls -A /sys/class/block/$node/holders)" ]
 identity=$(cat /sys/class/block/$node/dev)

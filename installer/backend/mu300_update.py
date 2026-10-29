@@ -93,7 +93,7 @@ if [ -s /etc/mu300/desktop-mode ]; then cat /etc/mu300/desktop-mode; else
     case "$d" in /dev/mmcblk[1-9]*) echo sd ;; *) echo legacy ;; esac
 fi''').strip().splitlines()
         if (len(info) != 4 or info[0] not in ('f50', 'v50', 'u30air') or info[1] not in ('a', 'b')
-                or not re.fullmatch(r'/dev/mmcblk\d+p\d+', info[2])):
+                or not re.fullmatch(r'/dev/(?:mmcblk\d+p|sd[a-z]+)[1-9][0-9]*', info[2])):
             raise ValueError('Not a supported MU300 runtime')
         mode = info[3]
         if mode not in ('sd', 'part', 'data-image', 'legacy'):

@@ -8,7 +8,7 @@ class PartitionWait(ShellTest):
         source=(TOP/'boot/init').read_text()
         loop=source.split('find_partitions() {',1)[1].split('    detect_linux_slot',1)[0]
         # Isolate the real readiness loop before slot detection and writes.
-        self.loop='poll() {'+loop.replace('/sys/class/block',str(self.tmp/'block')).replace('/dev/',str(self.tmp/'dev')+'/').replace('-b "$misc"','-f "$misc"')+'\n}\npoll\n'
+        self.loop='mu300_storage_disk() { echo mmcblk0; }\nmu300_storage_part() { echo mmcblk0p1; }\npoll() {'+loop.replace('/sys/class/block',str(self.tmp/'block')).replace('/dev/',str(self.tmp/'dev')+'/').replace('-b "$misc"','-f "$misc"')+'\n}\npoll\n'
         block=self.tmp/'block/mmcblk0p1';block.mkdir(parents=True)
         (block/'uevent').write_text('PARTNAME=misc\n')
         (self.tmp/'dev').mkdir()

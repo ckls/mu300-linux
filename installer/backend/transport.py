@@ -203,11 +203,12 @@ class Adb:
             process.communicate(timeout=5)
 
     def backup_partition(self, name, destination, context):
-        if not re.fullmatch(r'(misc|(?:boot|uboot|sml|teecfg|trustos|vbmeta)_[ab])',name):
+        if not re.fullmatch(r'(misc|metadata|(?:boot|uboot|sml|teecfg|trustos|vbmeta)_[ab])',name):
             raise ValueError('Unsupported backup partition')
         source='/dev/block/by-name/'+name
         total=4096 if name=='misc' else int(self.shell('blockdev --getsize64 '+source,root=True).strip())
         if total<=0:raise ValueError('Invalid backup partition size: '+name)
+        if name=='metadata' and total>256<<20:raise ValueError('Unexpected metadata partition size')
         remote=self._backup_directory(context,total)+'/'+name+'.img'
         local=Path(str(destination)+'.partial')
         context.log(f'Backing up {name}: {total} bytes; device dd -> adb pull',scope='backup')

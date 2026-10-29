@@ -6,6 +6,7 @@ set -o pipefail
 P=${MU300_PAYLOAD_DIR:?};T=${MU300_INSTALL_TMP:?}
 . "$P/desktop-settings.env"
 . "$P/ext4-geometry.sh"
+. "$P/storage-lib.sh"
 . "$P/android-loop.sh"
 # BusyBox's losetup lacks a size-limit option. Use Android Toybox explicitly;
 # PATH in the installer intentionally points at BusyBox for other applets.
@@ -15,12 +16,12 @@ P=${MU300_PAYLOAD_DIR:?};T=${MU300_INSTALL_TMP:?}
 disk=${1:?disk};cid=${2:?cid};total=${3:?sectors};start=${4:?start};need=${5:?size}
 want=${6:?image checksum};front=${7:?GPT front sectors};tail=${8:?GPT backup start}
 node=${disk##*/}
-case "$disk" in /dev/block/mmcblk[0-9]) ;; *) exit 1 ;; esac
-[ -b "$disk" ] || { echo 'eMMC block device required' >&2; exit 1; }
+case "$disk" in /dev/block/mmcblk[0-9]*|/dev/block/sd[a-z]*) ;; *) exit 1 ;; esac
+[ -b "$disk" ] || { echo 'Internal storage block device required / 需要内置存储块设备' >&2; exit 1; }
 for value in "$total" "$start" "$need" "$front" "$tail"; do
     case "$value" in ''|*[!0-9]*) exit 1 ;; esac
 done
-[ "$(cat /sys/class/block/$node/device/cid)" = "$cid" ]
+[ "$(mu300_storage_identity "$node")" = "$cid" ]
 [ "$(cat /sys/class/block/$node/size)" = "$total" ]
 [ "$front" -ge 3 ] && [ "$front" -le 4096 ]
 [ "$tail" -ge "$((total-4096))" ] && [ "$tail" -lt "$total" ]

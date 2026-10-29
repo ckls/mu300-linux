@@ -267,8 +267,11 @@ ucs2_to_esc() {
 # UTF-8 -> UCS-2 hex (surrogate pair above 0xFFFF). Malformed bytes become "?" rather than
 # aborting the message.
 utf8_to_ucs2() {
-    LC_ALL=C awk '
+    # The extra terminator preserves even trailing LF as records. Emit their
+    # encoded 000a between records, never a literal LF inside the PDU string.
+    printf '%s\n' "$1" | LC_ALL=C awk '
         BEGIN { for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i }
+        NR > 1 { printf "000a" }
         {
             s = $0; n = length(s); i = 1; out = ""
             while (i <= n) {
@@ -291,8 +294,9 @@ utf8_to_ucs2() {
                     out = out sprintf("%04x", cp)
                 }
             }
-            print out
-        }'
+            printf "%s", out
+        }
+        END { printf "\n" }'
 }
 
 # BCD digits -> semioctets ("10086" -> "0180F6"): low nibble carries the first digit, an odd
@@ -838,7 +842,7 @@ cmd_send() {
     case $idigits in ''|*[!0-9]*) die "$num is not a phone number" ;; esac
     [ -n "$text" ] || die "send needs a text"
     [ -p "$ATDIR/cmd" ] || die "mu300-atd is not running - a submit needs its two-phase path"
-    ud=$(printf '%s' "$text" | utf8_to_ucs2)
+    ud=$(utf8_to_ucs2 "$text")
     [ $(( ${#ud} / 4 )) -gt 70 ] &&
         die "text is $(( ${#ud} / 4 )) UCS-2 units; one SMS part carries 70 (concatenation not implemented)"
     udl=$(( ${#ud} / 2 ))
@@ -852,7 +856,7 @@ cmd_send() {
     echo "submitting to $num ($len octets, $((udl / 2)) UCS-2 units)"
 
     sms_op_lock
-    local r0 r2 submit
+    local r0 r2 submit submit_rc reason
     at_lock
     smsc_refresh
     r0=$(at 'AT+CAVIMS=1' 6)
@@ -860,11 +864,14 @@ cmd_send() {
     r0=$(at 'AT+CMGF=0' 6)       # PDU mode for the submit
     case $r0 in *OK*) ;; *) die "modem refused AT+CMGF=0: $r0" ;; esac
     submit=$(printf 'AT+CMGS=%s\r%s\032' "$len" "$pdu")
-    r2=$(at "$submit" 25)
+    r2=$(at "$submit" 25 2>&1); submit_rc=$?
     # Stay in PDU mode. Switching back to text here corrupts direct +CMT
     # delivery; the legacy SIM reader selects text explicitly when needed.
     if ! printf '%s\n' "$r2" | grep -q '^+CMGS:'; then
-        die "submit failed: $(printf '%s\n' "$r2" | grep -E 'CMS|ERROR' | head -1)"
+        reason=$(printf '%s\n' "$r2" | grep -E 'CMS|ERROR|mu300-at:|unisoc-at:' | head -1)
+        [ -n "$reason" ] || reason="no submission acknowledgement (AT exit $submit_rc); delivery status unknown"
+        # A timeout after Ctrl-Z is ambiguous. Do not send the PDU again.
+        die "submit failed: $reason"
     fi
     # Never wait for the local pool while owning the AT channel.
     at_unlock

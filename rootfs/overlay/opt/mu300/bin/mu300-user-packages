@@ -16,7 +16,7 @@
 # tries again at the next boot, five boots at most (then: retry). A package the feeds do not have (installed from a
 # file) fails for good: its settings stay in /etc/mu300/orphaned-config, and status says how to put them back.
 #
-# After the reinstall step OpenWrt's DNS is checked: a proxy (OpenClash and the like) points dnsmasq at a port of its
+# After the reinstall step OpenWrt's DNS is checked: a local DNS forwarding service points dnsmasq at a port of its
 # own on 127.0.0.1 while it runs, and an update took that over with /etc/config/dhcp - without the proxy there was no
 # DNS at all (#116). It never weakens DNS privacy by itself (see dns_check): a forwarder of a package that is gone for
 # good is removed only when another server stays; an only one is reported, and repair-dns removes it on request.
@@ -69,13 +69,12 @@ port_bound() {
     cat "$PROC/net/udp" "$PROC/net/udp6" 2>/dev/null |
         awk -v h="$_h" '{ n = split($2, a, ":"); if (n > 1 && toupper(a[n]) == h) f = 1 } END { exit !f }'
 }
-# What a proxy (OpenClash and the like) left in dnsmasq: while it runs it points dnsmasq at a port of its own on the
+# What a local DNS forwarding service left in dnsmasq: while it runs it points dnsmasq at a port of its own on the
 # loopback, and an update took that over with /etc/config/dhcp (#116). DNS privacy comes first: nothing here ever
 # sends DNS to the connection's resolvers by itself, and it acts only on a forwarder that is provably orphaned:
 #   - its port is a value in the set-aside settings of a package the update wrote down (attributable), and nothing in
-#     the project's own settings (/etc/mu300, the VPN's included) names that port;
+#     the project's own settings (/etc/mu300) names that port;
 #   - nothing is bound to it at any of DNS_CHECKS looks, DNS_INTERVAL seconds apart;
-#   - the VPN is off (vpn.conf ENABLE, read with vpn_conf_value, never printed);
 #   - for a change at boot: the package is definitively absent (failed in the feeds, given up, or skipped) - checked
 #     after the reinstall step, never before - and another server stays in that dnsmasq section. A forwarder that is
 #     the only one is reported (status, the note at login) and left as it is: no DNS until the user decides, with
@@ -99,12 +98,11 @@ port_owner() {
     done < "$D/files"
     return 1
 }
-# project_names PORT: the project's own settings (the VPN's too) mention the port
+# project_names PORT: the project's own settings mention the port
 project_names() {
     [ -n "$(find "$R/etc/mu300" -type f ! -path '*/orphaned-config/*' ! -path '*/user-packages/*' \
         -exec grep -lw -- "$1" {} + 2>/dev/null)" ]
 }
-vpn_on() { [ "$(vpn_conf_value "$R/etc/mu300/vpn.conf" ENABLE)" = 1 ]; }
 # dns_orphans: "SECTION VALUE PKG FINAL OTHERS" for each attributable loopback forwarder nothing listens on now
 # (FINAL 1: the package is definitively absent; OTHERS 1: the section has another server)
 dns_orphans() {
@@ -129,11 +127,6 @@ dns_check() {
     [ "$KIND" = openwrt ] && have uci || return 0
     _c=$(dns_orphans)
     [ -n "$_c" ] || return 0
-    if vpn_on; then
-        log "DNS: dnsmasq forwards to a port of a package that is not installed, and the VPN is on: nothing is changed (uci show dhcp)"
-        echo "dnsmasq forwards to a port of a package that is not installed; the VPN is on, so nothing was changed: uci show dhcp" > "$DNS_NOTE"
-        return 0
-    fi
     # seen again over the window: one that comes up meanwhile was starting, not gone
     _i=1
     while [ "$_i" -lt "$DNS_CHECKS" ] && [ -n "$_c" ]; do

@@ -446,10 +446,21 @@ return view.extend({
 			/* A newer successful read supersedes the slow tier's old failure. */
 			delete c.error;
 		}
+		var viewedSlot = Number(c && c.card != null ? c.card : M.selectedSlot());
+		var sim = i.modem && i.modem.sims && i.modem.sims[viewedSlot];
+		var absent = !!(sim && sim.state === 'absent' && Number(sim.slot) === viewedSlot);
+		// SIM removal clears subscription/network data, while equipment identity
+		// and the real RF readback remain meaningful without a card.
+		if (absent) {
+			var equipment = c && c.ident;
+			c = { card: sim.slot, cfun: c && c.cfun, ident: equipment ? {
+				imei: equipment.imei, mfg: equipment.mfg, model: equipment.model, fw: equipment.fw
+			} : null };
+		}
 		this.lastCell = c;
 		/* 慢档数据（邻区/运营商/身份）只在整份缓存的时间戳变化时重绘 */
 		var fullTs = [c && c.card, st.cell && st.cell.ts, st.cell && st.cell.partial || 0,
-			st.cell && st.cell.neigh_pending || 0, c && c.error || ''].join(':');
+			st.cell && st.cell.neigh_pending || 0, c && c.error || '', absent ? 'absent' : ''].join(':');
 		var slowChanged = fullTs !== this.lastFullTs;
 		this.lastFullTs = fullTs;
 
@@ -465,8 +476,8 @@ return view.extend({
 		var label = M.qLabel(rsrp, rsrq, sinr), score = M.qScore({ rsrp: rsrp, rsrq: rsrq, sinr: sinr });
 		var col = M.qCol(label);
 
-		var rat = '--';
-		if (c && !c.error) {
+		var rat = absent ? '未插卡' : '--';
+		if (!absent && c && !c.error) {
 			var nr = c.nr && c.nr.band ? true : false;
 			var lte = c.lte && c.lte.band ? true : false;
 			if (nr && lte) rat = '5G NSA';
@@ -530,7 +541,7 @@ return view.extend({
 		M.set('apn', w.apn || '--');
 		M.set('sess', w.uptime ? M.fmtUptime(w.uptime) : '--');
 		var regmap = { 0: '未注册', 1: '已注册', 2: '搜索中', 3: '注册被拒', 4: '未知', 5: '已注册（漫游）', 7: '仅紧急', 8: '仅紧急', 10: '已注册' };
-		var reg = '--';
+		var reg = absent ? '未插卡' : '--';
 		if (c && c.reg) {
 			reg = regmap[c.reg.stat] || ('状态 ' + c.reg.stat);
 			if (c.reg.tac) reg += ' · TAC ' + c.reg.tac;

@@ -10,7 +10,7 @@ import zipfile
 TOP=Path(__file__).resolve().parents[1]
 
 
-def repack(source,target,studio,revision):
+def repack(source,target,studio,revision,repair_installer=False):
     if target.exists():raise ValueError('Target release already exists')
     tool=json.loads((studio/'diff-tool.json').read_text())
     patches={}
@@ -27,8 +27,18 @@ def repack(source,target,studio,revision):
             'Windows: **OpenWrt-Diff-Studio.exe**. Apple Silicon: **OpenWrt-Diff-Studio.app**.\n\n'
             '完整解压后打开；与安装器共用 tools 目录，请勿单独移动程序。'
             '使用说明见 [DIFF-STUDIO.md](docs/DIFF-STUDIO.md)。\n').encode()
+        if repair_installer:
+            # The external Python entry is loaded by both native hosts. This
+            # repair changes no firmware or native runtime; do not rebuild them.
+            patches['START-HERE.md']=old.read('START-HERE.md')
+            entry=(TOP/'desktop/installer.py').read_bytes()
+            for name in ('OpenWrt-Installer.py','desktop/installer.py'):
+                if name not in manifest['desktop']:
+                    raise ValueError('Missing installer entry: '+name)
+                patches[name]=entry
+            manifest['source']['installer.py']=hashlib.sha256(entry).hexdigest()
         payload={n:checks[n] for n in manifest['magisk_layout'].values()}
-        patches['desktop/TOOLS-REVISION.json']=(json.dumps({'format':1,'kind':'tools-only',
+        patches['desktop/TOOLS-REVISION.json']=(json.dumps({'format':1,'kind':'installer-entry-repair' if repair_installer else 'tools-only',
             'source_commit':revision['source_commit'],'source_fingerprint':revision['source_fingerprint'],
             'firmware_unchanged':payload,'base_archive':source.name},indent=2)+'\n').encode()
         manifest['desktop'].update({n:hashlib.sha256(v).hexdigest() for n,v in patches.items()})

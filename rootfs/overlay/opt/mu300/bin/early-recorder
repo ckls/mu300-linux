@@ -7,8 +7,10 @@ export PATH="$PATH:/opt/mu300/busybox-bin"
 slot=$(cat /run/mu300/linux-slot 2>/dev/null || echo b)
 case $slot in a|b) ;; *) exit 0 ;; esac
 bootpart=boot_$slot
-BOOTDEV=$(readlink -f "/dev/block/by-name/$bootpart" 2>/dev/null)
-[ -b "$BOOTDEV" ] || for u in /sys/class/block/mmcblk0p*/uevent; do grep -qx "PARTNAME=$bootpart" "$u" && BOOTDEV=/dev/$(basename "$(dirname "$u")"); done
+. /opt/mu300/lib/storage.sh
+disk=$(mu300_storage_disk) || exit 0
+node=$(mu300_storage_part "$bootpart" "$disk") || exit 0
+BOOTDEV=/dev/$node
 [ -b "$BOOTDEV" ] || exit 0
 # --- cpus begin
 # The little cluster (FINDINGS 208): a round reads the kernel's whole log, which is work that woke an A76 every few

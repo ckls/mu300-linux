@@ -107,3 +107,17 @@ python3 tools/build-release.py run --workspace /home/kano/openwrt-build --label 
 
 工具文件逐项按发布包内 `diff-tool.json` 核验，保留 Mac App 签名内容和可执行权限，
 不解压固件、不重新编译；输出 ZIP 与 SHA256，已有目标不覆盖。
+
+## 仅修复外部安装器 Python 入口
+
+当变更只涉及 `desktop/installer.py` 的外部入口逻辑时，可流式修补已验证发布，
+不重新构建固件或未变化的原生后端：
+
+```sh
+python3 tools/build-release.py repair-installer --workspace /home/kano/openwrt-build \
+  --profiles mu300-7.2 --source-release /absolute/repo/release/<verified-task> --label installer-entry-fix
+```
+
+新包同步替换根目录和 desktop 的入口及清单；boot、rootfs、Magisk 内容保持相同。
+此入口不用于修补内置后端、驱动或任意其他脚本。此类依赖改变仍应走对应构建。
+发布前通过实际冻结程序加载包内入口、CLI 和 GUI Adapter 的无设备测试，不能只测试 hello。

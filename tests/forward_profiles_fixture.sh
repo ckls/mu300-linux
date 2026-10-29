@@ -3,6 +3,7 @@
 set -e
 source=$1
 base=$(mktemp -d /tmp/mu300-forward-profiles.XXXXXX)
+trap 'rm -rf "$base"' EXIT
 export MU300_FORWARD_DIR=$base/config MU300_SMS_POOL=$base/pool MU300_FORWARD_RESULT=$base/result
 export MU300_FORWARD_BATTERY=$base/battery MU300_SMS_BIN=/bin/false
 export MU300_FORWARD_RUNTIME=$base
@@ -125,7 +126,9 @@ curl() {
 msmtp() { cat > "$base/smtp.body"; }
 # Minimal base images may omit openssl; exercise argument/encoding plumbing
 # there. On the device the installed openssl performs the actual HMAC/MIME.
+real_openssl=1
 if ! command -v openssl >/dev/null 2>&1; then
+    real_openssl=0
     openssl() { case "$1" in dgst) cat ;; base64) cat >/dev/null; printf 'VEVTVCs/=' ;; *) return 1 ;; esac; }
 fi
 load_config
@@ -153,13 +156,41 @@ TEST_HTTP_CODE=200 webhook_method=POST webhook_body=
 deliver sms 10010 legacy now
 [ "$(jsonfilter -i "$base/curl.body" -e '@.text')" = legacy ]
 [ "$(jsonfilter -i "$base/curl.body" -e '@.date')" = now ]
+# Literal newlines must be JSON-escaped, not split into records or stripped.
+TEST_MULTILINE=$(printf '\nfirst\r\n中文\n\nlast\n\n.')
+TEST_MULTILINE=${TEST_MULTILINE%.}
+export TEST_MULTILINE
+deliver sms 10010 "$TEST_MULTILINE" now
+ucode -e 'import {readfile} from "fs"; if (json(readfile(ARGV[0])).text != getenv("TEST_MULTILINE")) exit(1);' "$base/curl.body"
+webhook_body='{"text":"{text}","sim":"{sim}"}'
+deliver sms 10010 "$TEST_MULTILINE" now
+ucode -e 'import {readfile} from "fs"; if (json(readfile(ARGV[0])).text != getenv("TEST_MULTILINE")) exit(1);' "$base/curl.body"
+webhook_content_type=text/plain webhook_body='{text}'
+deliver sms 10010 "$TEST_MULTILINE" now
+ucode -e 'import {readfile} from "fs"; if (readfile(ARGV[0]) != getenv("TEST_MULTILINE")) exit(1);' "$base/curl.body"
+webhook_content_type=application/json webhook_body=
 method=dingtalk dingtalk_webhook='https://oapi.dingtalk.com/robot/send?access_token=TEST_ONLY' dingtalk_secret=TEST_SIGN_KEY
-deliver sms 10010 body now
+deliver sms 10010 "$TEST_MULTILINE" now
 grep -q 'timestamp=.*sign=' "$base/curl.args"
 [ "$(jsonfilter -i "$base/curl.body" -e '@.msgtype')" = text ]
+ucode -e 'import {readfile} from "fs"; let text=json(readfile(ARGV[0])).text.content; if (substr(text,-length(getenv("TEST_MULTILINE"))) != getenv("TEST_MULTILINE")) exit(1);' "$base/curl.body"
 method=smtp smtp_host=smtp.example.com smtp_port=465 smtp_username=from@example.com smtp_to=to@example.com smtp_password=TEST_ONLY
-deliver sms 10010 body now
+deliver sms 10010 "$TEST_MULTILINE" now
 grep -q 'Subject: =?UTF-8?B?' "$base/smtp.body"
+if [ "$real_openssl" = 1 ]; then
+    ucode -e 'import {readfile} from "fs"; let msg=readfile(ARGV[0]), body=b64dec(replace(split(msg,"\r\n\r\n")[1],/[\r\n]/g,"")); if (substr(body,-length(getenv("TEST_MULTILINE"))) != getenv("TEST_MULTILINE")) exit(1);' "$base/smtp.body"
+fi
+# Exercise the SMS forwarding branch too, replacing only the final sender.
+cat > "$base/sms-capture" <<'EOF_SMS_CAPTURE'
+#!/bin/sh
+[ "$1" = send ] || exit 1
+printf '%s' "$3" > "$MU300_FORWARD_RUNTIME/sms.body"
+EOF_SMS_CAPTURE
+chmod 700 "$base/sms-capture"
+method=sms SMS=$base/sms-capture sms_to_phone=10086 sms_forward_device_info=0
+deliver sms 10010 "$TEST_MULTILINE" now
+[ "$DELIVER_RESULT" = sent ]
+ucode -e 'import {readfile} from "fs"; let body=readfile(ARGV[0]); if (substr(body,-length(getenv("TEST_MULTILINE"))) != getenv("TEST_MULTILINE")) exit(1);' "$base/sms.body"
 echo 'PASS isolated real delivery: POST/GET/headers/timeout/HTTP errors/legacy JSON/DingTalk signing/SMTP'
 # Saving a disabled profile before its inbox exists cannot create a zero/zero
 # cursor that would subsequently turn a SIM history import into live mail.

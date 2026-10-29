@@ -148,6 +148,8 @@ load_vendor_modules() {
 # misc and boot slots: where they are is known only once the eMMC is there, and its driver (sdhci-sprd) is one of
 # the vendor modules - an earlier lookup found nothing (U30 Air: misc-NOT-FOUND, no persistent log). So this runs
 # after load_vendor_modules; the opposite Android slot is restored only after the rootfs is known.
+. /etc/mu300-storage.sh
+internal_disk=
 misc=
 linux_slot=
 detect_linux_slot() {
@@ -172,18 +174,17 @@ find_partitions() {
         attempts=200; scan_every=10; fast_wait=1
     fi
     for n in $(seq 1 "$attempts"); do
-        for u in /sys/class/block/mmcblk*p*/uevent; do
-            grep -qx PARTNAME=misc "$u" 2>/dev/null && misc=/dev/$(basename "$(dirname "$u")")
-        done
+        internal_disk=$(mu300_storage_disk)
+        misc_node=$(mu300_storage_part misc "${internal_disk:-__missing__}")
+        misc=${misc_node:+/dev/$misc_node}
         [ -b "$misc" ] && break
         if [ "$fast_wait" = 1 ]; then usleep 100000; else sleep 1; fi
         [ $((n % scan_every)) != 0 ] || mdev -s
     done
     [ -b "$misc" ] || misc=
     detect_linux_slot || { bootdev=; return 1; }
-    for u in /sys/class/block/mmcblk*p*/uevent; do
-        grep -qx "PARTNAME=boot_$linux_slot" "$u" 2>/dev/null && bootdev=/dev/$(basename "$(dirname "$u")")
-    done
+    boot_node=$(mu300_storage_part "boot_$linux_slot" "${internal_disk:-__missing__}")
+    bootdev=${boot_node:+/dev/$boot_node}
     [ -b "$bootdev" ] || bootdev=
     echo "$bootdev" > /run/bootdev
     log "stage=persist-target dev=${bootdev:-none} slot=$linux_slot misc=${misc:-none}"
@@ -397,6 +398,7 @@ root_region_valid() {
     # Validate both GPT boundaries BEFORE dd or losetup. Some Android MMC
     # drivers wedge on out-of-device reads instead of returning an error (#65).
     case $1 in ''|*[!0-9]*) return 1 ;; esac
+    [ "$internal_disk" = mmcblk0 ] || return 1
     disk_sectors=$(cat /sys/block/mmcblk0/size) || return 1
     case $disk_sectors in ''|*[!0-9]*) return 1 ;; esac
     [ "$1" -gt 0 ] && [ $(( $1 % 512 )) -eq 0 ] || return 1
@@ -437,13 +439,9 @@ find_root_offset() {
 # Do not scan the card or accept two partitions with the same name.
 find_gpt_root() {
     local candidate= p name label magic
-    [ "$(cat /sys/block/mmcblk0/device/type 2>/dev/null)" = MMC ] || return 1
-    for p in /sys/block/mmcblk0/mmcblk0p*/uevent; do
-        grep -qx PARTNAME=mu300root "$p" 2>/dev/null || continue
-        [ -z "$candidate" ] || return 1
-        name=${p%/uevent}; name=${name##*/}
-        candidate=/dev/$name
-    done
+    [ -n "$internal_disk" ] || return 1
+    name=$(mu300_storage_part mu300root "$internal_disk") || return 1
+    candidate=/dev/$name
     [ -n "$candidate" ] && [ -b "$candidate" ] || return 1
     dd if="$candidate" of=/run/root-super bs=512 count=8 2>/dev/null || return 1
     [ "$(wc -c < /run/root-super)" = 4096 ] || return 1
@@ -591,7 +589,7 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
     echo "$rootloop" > /run/mu300/disk-dev
     case "$rootloop" in
         /dev/loop*) [ -z "$internal_root" ] || echo 'mmcblk0@region' > /run/mu300-root-dev ;;
-        /dev/mmcblk0p*) echo 'mmcblk0@mu300root' > /run/mu300-root-dev ;;
+        "/dev/${internal_disk}"p[0-9]*|"/dev/${internal_disk}"[0-9]*) echo "$internal_disk@mu300root" > /run/mu300-root-dev ;;
         *) [ -z "$sd_root" ] || echo "$sd_root" > /run/mu300-root-dev ;;
     esac
     echo "$DEVICE" > /run/mu300/device
@@ -681,8 +679,9 @@ log "stage=ready"
 A=/android
 cp -a $A/dev/__properties__ /dev/__properties__
 mkdir -p /dev/block/by-name
-for u in /sys/class/block/mmcblk0p*/uevent; do
+for u in /sys/class/block/${internal_disk:-__missing__}*/uevent; do
     d=$(basename "$(dirname "$u")")
+    case "$d" in "${internal_disk}"p[0-9]*|"${internal_disk}"[0-9]*) ;; *) continue ;; esac
     n=$(sed -n 's/^PARTNAME=//p' "$u")
     ln -sf /dev/$d /dev/block/$d
     [ -n "$n" ] && ln -sf /dev/$d /dev/block/by-name/$n

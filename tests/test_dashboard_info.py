@@ -1,5 +1,6 @@
 """Native snapshot regressions retain the original dashboard wire contract."""
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,34 @@ class DashboardInfo(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name);self.snap=Snapshot(self.root)
+
+    def test_sim_presence_uses_only_the_scoped_powered_owner_cache(self):
+        s=self.snap
+        self.assertEqual(s.run('sim_state','0'),'unknown')
+        s.write('run/mu300-registration/sim0.json','{"slot":0,"state":"absent"}')
+        self.assertEqual(s.run('sim_state','0'),'unknown')
+        s.write('run/mu300-registration/sim-power0','')
+        self.assertEqual(s.run('sim_state','0'),'absent')
+        self.assertEqual(s.run('sim_state','1'),'unknown')
+        for value in ('{"slot":1,"state":"absent"}','{"slot":0,"state":"invalid"}','broken json','null'):
+            s.write('run/mu300-registration/sim0.json',value)
+            self.assertEqual(s.run('sim_state','0'),'unknown')
+        for value in ('ready','locked'):
+            s.write('run/mu300-registration/sim0.json',json.dumps(dict(slot=0,state=value)))
+            self.assertEqual(s.run('sim_state','0'),value)
+        self.assertEqual(s.run('sim_state','invalid'),'unknown')
+
+    def test_info_reports_the_requested_slot_and_clears_on_owner_loss(self):
+        s=self.snap
+        s.write('run/mu300-at/owner/pid','123')
+        s.write('proc/123/cmdline','owner')
+        fifo=s.root/'run/mu300-at/cmd';os.mkfifo(fifo)
+        s.write('run/mu300-registration/sim-power0','')
+        s.write('run/mu300-registration/sim0.json','{"slot":0,"state":"absent"}')
+        self.assertEqual(s.run(slot='0')['modem']['sims'][0],dict(slot=0,state='absent'))
+        self.assertEqual(s.run(slot='1')['modem']['sims'][1],dict(slot=1,state='unknown'))
+        (s.root/'run/mu300-at/owner/pid').unlink()
+        self.assertEqual(s.run(slot='0')['modem']['sims'][0],dict(slot=0,state='unknown'))
 
     def test_dns_reuses_both_status_snapshots(self):
         data=self.snap.run()

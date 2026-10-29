@@ -167,7 +167,7 @@ fi
 
 # --- user-packages begin
 # Packages installed on the device are not in the release's image, and an update puts the image in place while it
-# keeps /etc/config (OpenWrt) and /etc/mu300: their programs were gone and their settings stayed - OpenClash's left
+# keeps /etc/config (OpenWrt) and /etc/mu300: their programs were gone and their settings stayed - an absent DNS extension left
 # the device without DNS (#116). So before the switch the update writes down what was added - the packages asked for
 # by hand (OpenWrt: /etc/apk/world; Ubuntu: dpkg's packages that apt did not pull in by itself) less the image's
 # own set (etc/mu300/image-packages, written when the image is built) - into etc/mu300/user-packages/ of the new

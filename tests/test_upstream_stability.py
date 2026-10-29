@@ -96,10 +96,10 @@ class UsbHandoff(ShellTest):
 printf '%s\n' "$*" >> "$STUBLOG/ip-calls"
 case "$*" in
  'link set rndis0 master br-lan') touch "$STUBLOG/bridged" ;;
- '-4 -o addr show dev br-lan') echo '2: br-lan inet 192.168.77.1/24 scope global br-lan' ;;
+ '-4 -o addr show dev br-lan scope global') [ "$LAN_READY" = 1 ] && echo '2: br-lan inet 192.168.88.1/24 scope global br-lan' ;;
  '-o link show dev rndis0') [ -f "$STUBLOG/bridged" ] && echo '3: rndis0 master br-lan' ;;
  '-o link show dev usb0') echo '4: usb0' ;;
- '-4 -o addr show dev rndis0') echo "3: rndis0 inet $PORT_ADDR scope global rndis0" ;;
+ '-4 -o addr show dev rndis0 scope global') echo "3: rndis0 inet $PORT_ADDR scope global rndis0" ;;
 esac
 exit 0
 ''')
@@ -107,18 +107,29 @@ exit 0
         # function must win so this fixture can never call the host's ip.
         source='ip() { "$STUBLOG/stubs/ip" "$@"; }\n'+source
         for shell in self.each_shell():
-            for address in ('192.168.77.1/24', '192.168.77.1/16', '192.168.88.1/24'):
+            for address, action, ready in (
+                    ('192.168.77.1/24', 'ifup', '1'),
+                    ('192.168.77.1/16', 'ifup', '1'),
+                    ('192.168.88.1/24', 'ifup', '1'),
+                    ('192.168.77.1/24', 'ifupdate', '1'),
+                    ('192.168.77.1/24', 'ifup', '0'),
+                    ('192.168.77.1/24', 'ifdown', '1')):
                 for name in ('bridged', 'ip-calls'):
                     (self.tmp / name).unlink(missing_ok=True)
-                r = self.sh(shell, source, ACTION='ifup', INTERFACE='lan', PORT_ADDR=address)
+                r = self.sh(shell, source, ACTION=action, INTERFACE='lan', PORT_ADDR=address, LAN_READY=ready)
                 self.assertEqual(r.returncode, 0, r.stderr)
-                calls = (self.tmp / 'ip-calls').read_text()
+                calls = (self.tmp / 'ip-calls').read_text() if (self.tmp / 'ip-calls').exists() else ''
+                if action == 'ifdown':
+                    self.assertEqual(calls, '')
+                    continue
                 self.assertLess(calls.index('link set rndis0 master br-lan'), calls.index('-4 -o addr show dev br-lan'))
-                if address.startswith('192.168.77.1/'):
+                if ready == '1':
                     self.assertIn(f'addr del {address} dev rndis0', calls)
                 else:
                     self.assertNotIn('addr del ', calls)
                 self.assertNotIn('addr del 192.168.77.1/24 dev usb0', calls)
+                self.assertNotIn(' down', calls)
+                self.assertNotIn('-6', calls)
 
 
 if __name__ == '__main__':

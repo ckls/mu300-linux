@@ -70,7 +70,7 @@ class UpdateLifecycle(unittest.TestCase):
         raw=bytearray(1024);raw[56:58]=b'\x53\xef'
         struct.pack_into('<I',raw,24,2);struct.pack_into('<I',raw,4,(4<<30)//4096)
         def read(command,timeout=15):
-            if command=='cat /sys/class/block/mmcblk0/device/cid':value=DEVICE['cid']
+            if (command=='cat /sys/class/block/mmcblk0/device/cid' or command.endswith('d=$(mu300_storage_disk) && mu300_storage_identity "$d"')):value=DEVICE['cid']
             elif command=='cat /proc/sys/kernel/random/boot_id':
                 if read_disconnect and not read_losses:
                     read_losses.append(True)

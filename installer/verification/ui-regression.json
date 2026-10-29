@@ -52,5 +52,23 @@
     "exit": 0,
     "output": "Wireless ADB smoke passed: retry, Enter connect without package, explicit multi-device target, exact disconnect, USB protection, authorization/offline, bound Android resume and unsafe-stage exclusion, bilingual 800x650 layout; no real device access\r\n",
     "error": ""
+  },
+  {
+    "test": "uninstall_smoke",
+    "exit": 0,
+    "output": "PASS: reset consent/cancel, original-record and device-evidence plans, preservation/release/reset impacts, bilingual UI, Android completion, bounded layout; simulated backend only\r\n",
+    "error": ""
+  },
+  {
+    "test": "mtp_smoke",
+    "exit": 0,
+    "output": "MTP toast: Chinese/English success/warning, one notification, no confirmation dialog\r\n",
+    "error": ""
+  },
+  {
+    "test": "online_shrink_smoke",
+    "exit": 0,
+    "output": "PASS: zh/en, small viewport, default online, explicit format, cancel, nonce/yes and new-plan confirmation\r\n",
+    "error": ""
   }
 ]

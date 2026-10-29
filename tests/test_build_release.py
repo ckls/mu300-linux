@@ -100,6 +100,36 @@ class Ownership(unittest.TestCase):
 
 
 class Archives(unittest.TestCase):
+    def test_entry_repair_keeps_firmware_and_native_files_identical(self):
+        spec=importlib.util.spec_from_file_location('entry_repack',TOP/'tools/repack-with-diff.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);studio=root/'studio';(studio/'docs').mkdir(parents=True)
+            files={'payload/boot-linux.img':b'boot','payload/mu300-openwrt.tar.gz':b'rootfs',
+                   'OpenWrt-Installer.py':b'old entry','desktop/installer.py':b'old entry',
+                   'tools/backend/openwrt-backend.exe':b'native runtime','START-HERE.md':b'guide',
+                   'docs/DIFF-STUDIO.md':b'diff guide'}
+            tool={'files':{'tools/backend/openwrt-backend.exe':hashlib.sha256(b'native runtime').hexdigest()}}
+            files['diff-tool.json']=json.dumps(tool).encode()
+            (studio/'diff-tool.json').write_bytes(files['diff-tool.json'])
+            (studio/'docs/DIFF-STUDIO.md').write_bytes(b'diff guide')
+            manifest={'magisk_layout':{'boot-linux.img':'payload/boot-linux.img','mu300-openwrt.tar.gz':'payload/mu300-openwrt.tar.gz'},
+                      'magisk':{k:hashlib.sha256(v).hexdigest() for k,v in files.items() if k.startswith('payload/')},
+                      'desktop':{k:hashlib.sha256(v).hexdigest() for k,v in files.items() if not k.startswith('payload/')},
+                      'source':{'installer.py':'old'}}
+            source=root/'old.zip';target=root/'fixed.zip'
+            with zipfile.ZipFile(source,'w') as z:
+                for k,v in files.items():z.writestr(k,v)
+                z.writestr('desktop/manifest.json',json.dumps(manifest))
+            module.repack(source,target,studio,dict(source_commit='abc',source_fingerprint='def'),repair_installer=True)
+            with zipfile.ZipFile(target) as z:
+                revised=json.loads(z.read('desktop/manifest.json'))
+                for k,v in files.items():
+                    self.assertEqual(z.read(k),(TOP/'desktop/installer.py').read_bytes() if k in ('OpenWrt-Installer.py','desktop/installer.py') else v)
+                for k,h in {**revised['magisk'],**revised['desktop']}.items():
+                    self.assertEqual(hashlib.sha256(z.read(k)).hexdigest(),h)
+                self.assertEqual(json.loads(z.read('desktop/TOOLS-REVISION.json'))['kind'],'installer-entry-repair')
+
     def fixture(self, path, *, corrupt=False, extra=None):
         files = {'payload/boot-linux.img': b'boot', 'payload/mu300-openwrt.tar.gz': b'root', 'OpenWrt-Installer.py': b'cli'}
         runtime={'OpenWrt-Diff-Studio.exe':b'diff GUI','OpenWrt-Diff-Studio.py':b'diff CLI',

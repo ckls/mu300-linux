@@ -19,8 +19,10 @@ from .adapter import Adapter, installation_committed
 from .package import inspect_package
 from .state import Cancelled, Context, DeviceLock, Pending, RecoveryRequired, Store, compatible
 from .transport import Adb, wireless_serial
+from . import storage as storage_io
 from .uninstall import Uninstaller, prepare as prepare_uninstall, persist as persist_uninstall
 from .uninstall_growth import PreservationUnavailable
+from .online_shrink import OnlineShrink, OnlineDecision, inspect as inspect_online, allocation as online_allocation, fallback_plan
 
 METHODS = {'tf', 'part', 'reinstall', 'image', 'boot', 'update', 'uninstall'}
 
@@ -71,18 +73,32 @@ def plan_install(package, device, choices):
             raise ValueError('Internal partition exists; choose update or reinstall / 已存在内置分区，请选择更新或重装')
         if size_bytes < 2 << 30:
             raise ValueError('OpenWrt needs at least 2 GiB / OpenWrt 至少需要 2 GiB')
+        if not device['gpt']['empty']:
+            raise ValueError('No unused GPT entry / GPT 没有可用分区条目')
         candidates = [(n, a) for a, n in device['gpt']['safe_gaps'] if n*512 >= size_bytes]
         gap = max(candidates)[1] if candidates and device['gpt']['empty'] else None
         if gap is not None:
             plan.update(gap_start=gap, target='GPT unallocated space', two_stage=package['adapter'] == 'e5')
         else:
-            wipe = device['encrypted'] or bool(choices.get('wipe'))
+            online = device.get('online_shrink',{})
+            online_reason = online.get('reason')
+            if online.get('available') and not choices.get('wipe') and choices.get('shrink_strategy') != 'format':
+                try:
+                    geometry = online_allocation(device,size_bytes)
+                except ValueError as error:
+                    online_reason = str(error)
+                else:
+                    plan.update(geometry,shrink_strategy='online-f2fs',target='Android online F2FS shrink',two_stage=True)
+                    return plan
+            wipe = device['encrypted'] or bool(choices.get('wipe')) or bool(online.get('available') and online_reason)
             android = device['userdata_bytes'] - size_bytes
             used = device['userdata_bytes'] - device['free_bytes']
             if android < (2 << 30) or (not wipe and android < used+(2 << 30)):
                 raise ValueError('Insufficient Android retained space / Android 保留空间不足')
             plan.update(wipe=wipe, two_stage=wipe, android_bytes=android, target='userdata shrink')
             plan['offline'] = True
+            if online_reason:
+                plan['online_unavailable'] = online_reason
     return plan
 
 
@@ -220,6 +236,14 @@ class Service:
             return self.adapter().probe(p['serial'], p.get('method', 'part'))
         if command == 'probe_update':
             return self.probe_update(p)
+        if command == 'online_fallback':
+            if self.worker and self.worker.is_alive():
+                raise ValueError('Wait for the active operation / 请等待当前操作结束')
+            record = self.store.load(p['transaction'])
+            with ExitStack() as locks:
+                for identity in sorted({record['device']['serial'],record['device']['cid']}):
+                    locks.enter_context(DeviceLock(self.store.base,identity))
+                return fallback_plan(self,record,p)
         if command == 'plan':
             if not self.package:
                 raise ValueError('Verify package first')
@@ -258,6 +282,13 @@ class Service:
                             'model':device['model'],'serial_hint':device['serial'][-4:]}
                 self.uninstall_reset_prompt = None
             else:
+                if (choices.get('method') == 'part' and not device.get('existing') and
+                        not choices.get('wipe') and choices.get('shrink_strategy') != 'format' and
+                        type(choices.get('size_gib',4)) in (float,int) and
+                        math.isfinite(choices.get('size_gib',4)) and choices.get('size_gib',4) > 0 and
+                        not any(n*512 >= math.ceil(choices.get('size_gib',4)*256)*4194304
+                                for _,n in device.get('gpt',{}).get('safe_gaps',[]))):
+                    device['online_shrink'] = inspect_online(plan_adapter,device)
                 plan = plan_install(self.package, device, choices)
             record = self.store.create(self.package, device, choices, plan)
             record['data_directory'] = str(self.store.directory(record['id']))
@@ -268,6 +299,8 @@ class Service:
             return self.public(record)
         if command in ('start', 'resume', 'retry'):
             record = self.store.load(p['transaction'])
+            if record.get('online_fallback',{}).get('state') == 'awaiting':
+                raise ValueError('Choose whether to prepare an erase-data plan / 请先选择是否准备清空数据的后备计划')
             if record['status'] == 'completed':
                 return self.public(record)
             if (record['choices'].get('method') == 'uninstall' and record['status'] == 'ready' and
@@ -373,13 +406,13 @@ class Service:
             profile = read('cat /etc/e5/device-profile' if kind == 'e5' else 'cat /run/mu300/device')
             if kind == 'e5' and profile != self.package['profile'] or kind == 'mu300' and profile not in ('f50', 'v50', 'u30air'):
                 raise ValueError('Wrong OpenWrt profile / OpenWrt 机型不匹配')
-            cid = read('cat /sys/class/block/mmcblk0/device/cid')
+            cid = read(storage_io.runtime_identity_script())
             if not re.fullmatch('[a-f0-9]{32}', cid):
-                raise ValueError('Cannot establish OpenWrt eMMC identity')
+                raise ValueError('Cannot establish OpenWrt internal-storage identity / 无法确认 OpenWrt 内置存储身份')
             capacity = int(read("df -Pk / | awk 'END {print $2}'"))*1024
             root_dev = read('cat /run/mu300/disk-dev' if kind == 'mu300' else
                             "readlink -f $(awk '$2==\"/\" {print $1}' /proc/mounts | tail -1)")
-            if re.fullmatch(r'/dev/(?:block/)?(?:mmcblk\d+(?:p\d+)?|loop\d+)', root_dev):
+            if re.fullmatch(r'/dev/(?:block/)?(?:mmcblk\d+(?:p\d+)?|sd[a-z]+(?:[1-9][0-9]*)?|loop\d+)', root_dev):
                 raw = read_bytes(f'dd if={root_dev} bs=1024 skip=1 count=1 2>/dev/null')
                 capacity = verify_ext4_capacity(raw, 0)
             return dict(serial='ssh:'+key, cid=cid, ssh_key=key, host=host, profile=profile,
@@ -396,6 +429,13 @@ class Service:
                     locks.enter_context(DeviceLock(self.store.base, identity))
                 if r['choices']['method'] == 'uninstall':
                     return Uninstaller(self, context, adapter).run()
+                if (r['plan'].get('shrink_strategy') == 'online-f2fs' and
+                        r.get('online_shrink',{}).get('state') != 'verified'):
+                    try:
+                        OnlineShrink(adapter).run()
+                    except Pending:
+                        self.wait_android(context,adapter)
+                        OnlineShrink(adapter).run()
                 if r['stage'] in ('openwrt_boot', 'verify_capacity') or installation_committed(r):
                     self.openwrt_wait_stage(context)
                     return self.wait_openwrt(context, adapter)
@@ -407,6 +447,8 @@ class Service:
                         if actual.get('cid') != r['device']['cid'] or actual.get('slot') != r['device']['slot']:
                             raise ValueError('Device identity or Android slot changed since plan / 设备或 Android 槽位与计划不一致')
                         # Recompute immediately before execution; do not accept stale TF geometry or GPT gaps.
+                        if r['plan'].get('shrink_strategy') == 'online-f2fs':
+                            actual['online_shrink'] = inspect_online(adapter,actual)
                         fresh = plan_install(r['package'], actual, r['choices'])
                         for key in ('wipe', 'target', 'openwrt_bytes', 'android_bytes', 'gap_start', 'target_identity'):
                             if fresh.get(key) != r['plan'].get(key):
@@ -422,6 +464,8 @@ class Service:
                     result = adapter.execute()
                 self.openwrt_wait_stage(context)
                 self.wait_openwrt(context, adapter)
+        except OnlineDecision:
+            return
         except Cancelled:
             context.stage(r['stage'], 'cancelled')
         except BaseException as error:
@@ -434,7 +478,7 @@ class Service:
             r['error'] = {'code': ('recovery_required' if isinstance(error, RecoveryRequired) else
                                    'capacity_mismatch' if isinstance(error, FilesystemCapacityError) else 'operation_failed'),
                           'message': message,
-                          'retryable': not r['unsafe'] or bool(r.get('legacy')) or r['choices']['method'] == 'uninstall'}
+                          'retryable': not r['unsafe'] or bool(r.get('legacy')) or r.get('online_shrink',{}).get('state') in ('prepared','started','gpt-committed') or r['choices']['method'] == 'uninstall'}
             context.stage(r['stage'], 'failed')
 
     def wait_android(self, context, adapter):
@@ -507,7 +551,7 @@ class Service:
                         raise ValueError('Final verification command failed')
                     return value
                 def read(script):return read_bytes(script).decode().strip()
-                cid = read('cat /sys/class/block/mmcblk0/device/cid')
+                cid = read(storage_io.runtime_identity_script())
                 if cid != r['device']['cid']:
                     raise RecoveryRequired('Management address belongs to another device / 管理地址对应另一台设备')
                 if r['choices']['method'] == 'update':
@@ -525,7 +569,7 @@ class Service:
                     dev = read("readlink -f $(awk '$2==\"/\" {print $1}' /proc/mounts | tail -1)")
                 else:
                     dev = read('cat /run/mu300/disk-dev')
-                if not re.fullmatch(r'/dev/(?:block/)?(?:mmcblk\d+(?:p\d+)?|loop\d+)', dev):
+                if not re.fullmatch(r'/dev/(?:block/)?(?:mmcblk\d+(?:p\d+)?|sd[a-z]+(?:[1-9][0-9]*)?|loop\d+)', dev):
                     raise ValueError('Cannot identify installed root block device')
                 raw = read_bytes(f'dd if={dev} bs=1024 skip=1 count=1 2>/dev/null')
                 # Older records may store the growth choice only in choices.

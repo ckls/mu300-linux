@@ -40,6 +40,12 @@ Linux、Intel Mac 或需要 Python 命令行入口时，可使用 **OpenWrt-Inst
 
 选择需要分给 OpenWrt 的容量。安装器优先使用已有未分配空间；不足时才需要缩小 Android 用户数据分区。最终计划会列出 Android 保留空间、OpenWrt 分配空间，以及是否会清空数据。
 
+图形安装器默认优先在线保数据缩容，支持 eMMC 和 UFS。F2FS 的搬移与缩小由正在运行的 Android 内核完成，FBE／metadata 加密的数据通过 Android 已解密映射处理，无需在 initramfs 解密。成功后正常重启 Android、校验主备超级块、UUID、映射容量及 GPT，再继续安装。不会清空 Android，也不需要重新设置 Magisk。
+
+若文件系统、映射或原厂内核不支持，会说明原因。在线尝试失败后，只有确认文件系统和 GPT 均未改变才提供清空数据的后备方案；输入 `yes` 仅生成新计划，仍须单独确认清空影响。状态不明时保留日志和备份，不能直接格式化。也可在“需要缩容时”主动选择原有离线清空方案；已有足够未分配空间时不需要缩容或清空。
+
+请在整个缩容和 GPT 提交期间保持供电。ADB 断开不会终止设备内的缩容事务；重连后从原记录继续，不要另建安装任务。不能提供准确百分比时会显示当前阶段和耗时，不会虚报进度。未经本机硬件测试的内核仍需实际验证，不能只凭 eMMC/UFS 类型判断支持。
+
 **“使用全部已分配的 OpenWrt 分区容量”建议保持开启**：例如分配 10 GiB，安装完成后便使用这 10 GiB，不会额外占用 Android 的剩余空间。
 
 首次启动会进行离线分区准备，可能需要数分钟，完成后设备会自动重启一次。数据较多时可能更久，请保持供电，不要因暂时没有画面而强制重启。
@@ -48,7 +54,7 @@ Linux、Intel Mac 或需要 Python 命令行入口时，可使用 **OpenWrt-Inst
 
 ### 加密 userdata：重置后自动续装
 
-如果加密的 Android 用户数据分区必须缩容，**Android 应用、账号、照片和内部存储会全部清空**。请先自行备份个人数据，并仔细核对安装计划中的重置提示。
+只有选择了清空数据的离线缩容方案时，**Android 应用、账号、照片和内部存储会全部清空**；在线保数据方案不执行重置。请先自行备份个人数据，并仔细核对安装计划中的重置提示。
 
 1. 保持安装器运行及设备供电，等待分区准备和恢复出厂完成。设备可能重启多次。
 2. 进入 Android 后，完成初始设置。
@@ -176,13 +182,19 @@ For internal installation, choose the capacity to allocate to OpenWrt. Available
 
 Leave **Use all allocated OpenWrt partition capacity** enabled to fill the chosen allocation. For example, allocating 10 GiB gives OpenWrt that 10 GiB without taking additional space from Android.
 
+The graphical installer prefers online F2FS preservation on eMMC and UFS when shrinking is required. Android’s running kernel relocates data through the mounted/decrypted volume, including supported FBE/metadata-encrypted layouts. The installer commits GPT and reboots Android normally to verify both superblocks, UUID, mapping capacity and the reclaimed gap before installation continues. No Android setup or Magisk reinstallation is needed after this path.
+
+Unsupported filesystems, mappings or kernels are explained. If an attempted resize fails, an erase-data fallback is offered only after verifying the filesystem and GPT are unchanged. Type `yes` to generate a new erase-data plan, then review and confirm it separately. Unknown intermediate states require recovery rather than automatic formatting. The original offline erase-data option remains selectable. Existing sufficient unallocated space is always used without shrinking or resetting Android.
+
+Keep power connected through resize and GPT commit. A detached device-side worker survives ADB loss; reconnect and resume the saved transaction. Kernel support requires hardware validation, not just identifying the storage as eMMC or UFS.
+
 The first boot performs offline partition preparation. This may take several minutes or longer with more data, then the device restarts automatically. Keep power connected and do not force a restart because the screen is temporarily blank.
 
 To replace an existing internal OpenWrt installation, choose Reinstall internal partition under Advanced options. No TF card is needed.
 
 ### Encrypted userdata and reset
 
-If encrypted Android userdata must be resized, **all Android apps, accounts, photos and internal storage will be erased**. Back up personal files first and review the reset warning in the installation plan.
+Only the erase-data offline fallback resets Android: **all Android apps, accounts, photos and internal storage will be erased**. Online preservation does not reset Android. Back up personal files first and review the reset warning in the installation plan.
 
 1. Keep the installer running and the device powered while partition preparation and factory reset finish. The device may restart more than once.
 2. Complete Android initial setup.
@@ -272,4 +284,4 @@ Check the original computer’s transaction directory and any exported full back
 
 #### When is data erased?
 
-TF installation erases the selected card target. Reinstallation replaces existing OpenWrt and its settings. Encrypted userdata that must be resized requires an Android reset. Review the final plan and back up data before confirming.
+TF installation erases the selected card target. Reinstallation replaces existing OpenWrt and its settings. An explicitly selected offline erase-data shrink resets Android; the online preservation path does not. Review the final plan and back up data before confirming.

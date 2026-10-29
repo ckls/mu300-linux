@@ -102,6 +102,8 @@ def payload_rootfs(root,tf=False):
         yield target
 
 def package_root():
+    if Path(__file__).name == 'OpenWrt-Installer.py':
+        return Path(__file__).resolve().parent
     here=Path(sys.executable if getattr(sys,'frozen',False) else __file__).resolve().parent
     return here.parent if here.name=='desktop' else here
 
@@ -136,84 +138,25 @@ def allocation(before, part_mib):
     if target<4194304 or need<4194304: raise ValueError('At least 2 GiB is required for each system')
     return target,need
 
-def gpt_backup_layout(primary, backup, sectors):
-    def header(raw,at):
-        if len(raw)!=512 or raw[:8]!=b'EFI PART':raise ValueError('Invalid GPT header')
-        size=struct.unpack_from('<I',raw,12)[0]
-        if not 92<=size<=512:raise ValueError('Invalid GPT header size')
-        check=bytearray(raw[:size]);expected=struct.unpack_from('<I',check,16)[0];check[16:20]=bytes(4)
-        if zlib.crc32(check)!=expected:raise ValueError('GPT header checksum failed')
-        current,alternate=struct.unpack_from('<QQ',raw,24)
-        table,count,entrysize=struct.unpack_from('<QII',raw,72)
-        if current!=at or count<1 or count>1024 or entrysize!=128:raise ValueError('Unsupported GPT geometry')
-        return alternate,table,(count*entrysize+511)//512,raw[56:72],raw[80:92]
-    a=header(primary,1);b=header(backup,sectors-1)
-    if a[0]!=sectors-1 or b[0]!=1 or a[3:]!=b[3:]:raise ValueError('GPT copies disagree')
-    front=a[1]+a[2];tail=b[1]
-    if not (2<=a[1]<front<=4096 and sectors-4096<=tail and tail+b[2]==sectors-1):raise ValueError('GPT backup range is invalid')
-    return front,tail
-
-def gpt_space(first,last,sectors):
-    """Validate both on-disk GPT copies and return aligned, genuinely unallocated ranges."""
-    primary=first[512:1024];backup=last[-512:]
-    front,tail=gpt_backup_layout(primary,backup,sectors)
-    if len(first)!=front*512 or len(last)!=(sectors-tail)*512:
-        raise ValueError('Incomplete GPT snapshot')
-    start,end=struct.unpack_from('<QQ',primary,40)
-    if (start,end)!=struct.unpack_from('<QQ',backup,40) or not front<=start<=end<tail:
-        raise ValueError('GPT usable bounds disagree or overlap metadata')
-    table,count,entry=struct.unpack_from('<QII',primary,72)
-    data=first[table*512:table*512+count*entry]
-    if data!=last[:count*entry] or zlib.crc32(data)!=struct.unpack_from('<I',primary,88)[0]:
-        raise ValueError('GPT table checksum/copy mismatch')
-    parts=[];empty=[]
-    for i in range(count):
-        raw=data[i*entry:(i+1)*entry]
-        if raw[:16]==bytes(16):empty.append(i);continue
-        a,b=struct.unpack_from('<QQ',raw,32)
-        name=raw[56:128].decode('utf-16-le').split('\0',1)[0]
-        if not start<=a<=b<=end:raise ValueError('GPT partition outside usable bounds: '+name)
-        parts.append({'n':i+1,'start':a,'end':b,'name':name})
-    at=start;gaps=[]
-    for part in sorted(parts,key=lambda p:p['start'])+[{'start':end+1,'end':end}]:
-        if part['start']<at:raise ValueError('Overlapping GPT partitions')
-        aligned=(at+2047)//2048*2048
-        limit=(part['start']//2048)*2048
-        if limit>aligned:gaps.append((aligned,limit-aligned))
-        at=part['end']+1
-    return {'front':front,'tail':tail,'parts':parts,'empty':empty,'gaps':gaps,
-            'largest':max((size for _,size in gaps),default=0) if empty else 0}
-
-def gpt_add_root(first,last,sectors,offset,need):
-    info=gpt_space(first,last,sectors)
-    if any(p['name']=='mu300root' for p in info['parts']):raise ValueError('mu300root already exists')
-    if not info['empty'] or need<4194304 or offset%2048 or need%2048 or not any(
-            offset>=a and offset+need<=a+n for a,n in info['gaps']):
-        raise ValueError('Requested root is not in an aligned GPT free range')
-    idx=info['empty'][0];entry=bytearray(128)
-    entry[:16]=uuid.UUID('0fc63daf-8483-4772-8e79-3d69d8477de4').bytes_le
-    entry[16:32]=uuid.uuid4().bytes_le
-    struct.pack_into('<QQ',entry,32,offset,offset+need-1)
-    name='mu300root'.encode('utf-16-le');entry[56:56+len(name)]=name
-    copies=[]
-    for raw,header_offset,table_offset in ((first,512,struct.unpack_from('<Q',first,584)[0]*512),(last,len(last)-512,0)):
-        new=bytearray(raw);new[table_offset+idx*128:table_offset+(idx+1)*128]=entry
-        count=struct.unpack_from('<I',new,header_offset+80)[0]
-        struct.pack_into('<I',new,header_offset+88,zlib.crc32(new[table_offset:table_offset+count*128]))
-        struct.pack_into('<I',new,header_offset+16,0)
-        hsize=struct.unpack_from('<I',new,header_offset+12)[0]
-        struct.pack_into('<I',new,header_offset+16,zlib.crc32(new[header_offset:header_offset+hsize]))
-        copies.append(bytes(new))
-    gpt_space(*copies,sectors)
-    return copies
-
-def free_root_range(info,need):
-    if not info['empty']:return None
-    # Old MU300 installs may live outside GPT at this fixed raw offset. Such
-    # an area is retained even though a partition table calls it unallocated.
-    gaps=info.get('safe_gaps',info['gaps'])
-    candidates=[(n,a) for a,n in gaps if n>=need]
-    return max(candidates)[1] if candidates else None
+# This script is loaded from the package before Adapter can bind package_root.
+# A frozen host's sys.executable is tools/backend, not this external script's
+# directory. Resolve sibling resources from __file__ in both host modes.
+_entry_path = Path(__file__).resolve()
+_support = _entry_path.parent
+if _entry_path.name == 'OpenWrt-Installer.py':
+    _support = _support/'desktop'
+elif not (_support/'gpt.py').is_file():
+    _support = _support.parent/'installer/backend'
+_gpt_path = _support/'gpt.py'
+_spec=importlib.util.spec_from_file_location('mu300_storage_gpt',_gpt_path)
+_gpt=importlib.util.module_from_spec(_spec);_spec.loader.exec_module(_gpt)
+gpt_backup_layout=_gpt.gpt_backup_layout
+gpt_space=_gpt.gpt_space
+gpt_add_root=_gpt.gpt_add_root
+free_root_range=_gpt.free_root_range
+_storage_path = _gpt_path.with_name('storage.py')
+_spec=importlib.util.spec_from_file_location('mu300_storage',_storage_path)
+_storage=importlib.util.module_from_spec(_spec);_spec.loader.exec_module(_storage)
 
 def encrypted(properties, source, raw_magic):
     # FBE can have a perfectly readable filesystem superblock. A filesystem
@@ -364,24 +307,13 @@ class Android:
         print(result,end='');return result
 
     def storage(self):
-        out=self.shell('set -e; d=$(readlink -f /dev/block/by-name/userdata); n=${d##*/}; b=${n%p*}; '+
-            'echo NODE=$n; echo CID=$(cat /sys/class/block/$b/device/cid); echo START=$(cat /sys/class/block/$n/start); '+
-            'echo SIZE=$(cat /sys/class/block/$n/size); echo DISK_SIZE=$(cat /sys/class/block/$b/size); '+
-            'echo FREE=$(df -Pk /data | tail -n1 | awk \'{print $4}\'); '+
-            'echo STATE=$(getprop ro.crypto.state); echo TYPE=$(getprop ro.crypto.type); '+
-            'echo SOURCE=$(awk \'$2=="/data" {print $1;exit}\' /proc/mounts); '+
-            'echo MAGIC=$(dd if="$d" bs=1 skip=1024 count=4 2>/dev/null | od -An -tx1 | tr -d " \\n"); '+
-            'echo EXT=$(dd if="$d" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d " \\n"); '+
-            'for u in /sys/class/block/${b}p*/uevent; do if grep -qx PARTNAME=mu300root "$u"; then n=${u%/uevent}; echo ROOT=${n##*/}; fi; done')
-        result=dict(l.split('=',1) for l in out.splitlines() if '=' in l)
-        if not re.fullmatch(r'mmcblk\d+p\d+',result['NODE']) or not re.fullmatch('[a-f0-9]{32}',result['CID']):raise ValueError('Invalid eMMC identity')
-        for n in ('START','SIZE','DISK_SIZE','FREE'):result[n]=int(result[n])
-        return result
+        return _storage.parse_inventory(self.shell(_storage.inventory_script(package_root())))
 
     def gpt(self,s):
-        disk='/dev/block/'+s['NODE'].split('p')[0]
-        primary=self.read(f'dd if={disk} bs=512 skip=1 count=1 2>/dev/null')
-        backup=self.read(f'dd if={disk} bs=512 skip={s["DISK_SIZE"]-1} count=1 2>/dev/null')
+        disk='/dev/block/'+_storage.disk_node(s['NODE'])
+        primary_cmd,backup_cmd=_storage.gpt_header_commands(s)
+        primary=self.read(primary_cmd)
+        backup=self.read(backup_cmd)
         front,tail=gpt_backup_layout(primary,backup,s['DISK_SIZE'])
         first=self.read(f'dd if={disk} bs=512 count={front} 2>/dev/null')
         last=self.read(f'dd if={disk} bs=512 skip={tail} count={s["DISK_SIZE"]-tail} 2>/dev/null')
@@ -406,10 +338,10 @@ class Android:
         return info
 
     def prepare_payload(self,root,tf=False,with_rootfs=True):
-        names=['busybox','android-bootchain.sh','bootchain.sh','switch.sh','mu300-vendor-from-device.sh','rootfs-critical.sha256','rootfs.requirements']
+        names=['storage-lib.sh','busybox','android-bootchain.sh','bootchain.sh','switch.sh','mu300-vendor-from-device.sh','rootfs-critical.sha256','rootfs.requirements']
         if tf:names+=['android-install.sh','tf-install-worker.sh','tf-storage.sh','tf-stage.sh','payload.sha256']
         for n in names:
-            source=root/'desktop'/n if n in ('android-bootchain.sh','bootchain.sh') else payload_file(root,n)
+            source=root/'desktop'/n if n in ('storage-lib.sh','android-bootchain.sh','bootchain.sh') else payload_file(root,n)
             self.push(source,n)
         if with_rootfs:
             with payload_rootfs(root,tf=tf) as archive:
@@ -431,9 +363,10 @@ class Android:
     def backup(self,path,s):
         path.mkdir(parents=True,exist_ok=False)
         path.joinpath('identity.json').write_text(json.dumps({**s,'serial':self.serial,'android_slot':self.slot},indent=2)+'\n')
-        disk='/dev/block/'+s['NODE'].split('p')[0]
-        primary=self.read(f'dd if={disk} bs=512 skip=1 count=1 2>/dev/null')
-        alternate=self.read(f'dd if={disk} bs=512 skip={s["DISK_SIZE"]-1} count=1 2>/dev/null')
+        disk='/dev/block/'+_storage.disk_node(s['NODE'])
+        primary_cmd,backup_cmd=_storage.gpt_header_commands(s)
+        primary=self.read(primary_cmd)
+        alternate=self.read(backup_cmd)
         front,tail=gpt_backup_layout(primary,alternate,s['DISK_SIZE'])
         items={'misc-head.bin':'dd if=/dev/block/by-name/misc bs=4096 count=1',
                'gpt-first.bin':f'dd if={disk} bs=512 count={front}',
@@ -450,7 +383,7 @@ class Android:
         first=path.joinpath('gpt-first.bin').read_bytes();last=path.joinpath('gpt-last.bin').read_bytes()
         if len(first)!=front*512 or len(last)!=(s['DISK_SIZE']-tail)*512:raise ValueError('Incomplete GPT backup')
         table,count,entry=struct.unpack_from('<QII',primary,72)
-        primary_table=first[table*512:table*512+count*entry]
+        primary_table=first[table*s.get('SECTOR_SIZE',512):table*s.get('SECTOR_SIZE',512)+count*entry]
         backup_table=last[:count*entry]
         if primary_table!=backup_table or zlib.crc32(primary_table)!=struct.unpack_from('<I',primary,88)[0]:raise ValueError('GPT table checksum/copy mismatch')
         path.joinpath('SHA256SUMS').write_text(''.join(digest(path/n)+'  '+n+'\n' for n in items))
@@ -638,13 +571,13 @@ def install(args,root,manifest):
         free_max=space['largest']//2048//4*4
         shrink_max=(s['SIZE']//2048-2048)//4*4
         maximum=max(free_max,shrink_max)
-        print(f'eMMC / 闪存: {s["DISK_SIZE"]/2097152:.2f} GiB; GPT unused / 未分配可用: {free_max/1024:.2f} GiB')
+        print(f'Internal storage / 内置存储: {s["DISK_SIZE"]/2097152:.2f} GiB; GPT unused / 未分配可用: {free_max/1024:.2f} GiB')
         size=image_size(args.size or input(f'OpenWrt partition GiB / 分区大小 [4], max {maximum/1024:.2f}: ') or '4',maximum)
         offset=free_root_range(space,size*2048)
         if offset is not None:
             if GUI:GUI.validate_plan('GPT unallocated space',capacity=size*1048576,gap_start=offset)
             if args.format_userdata:raise ValueError('Free-space installation preserves userdata; omit --format-userdata')
-            confirm(f'Use {size/1024:.2f} GiB of unallocated eMMC space; Android userdata is preserved / 使用未分配空间，不缩容、不格式化 Android。Selected raw range will be overwritten / 所选空闲区域原始内容将被覆盖。')
+            confirm(f'Use {size/1024:.2f} GiB of unallocated internal storage; Android userdata is preserved / 使用未分配空间，不缩容、不格式化 Android。Selected raw range will be overwritten / 所选空闲区域原始内容将被覆盖。')
             backup=base/(time.strftime('%Y%m%d-%H%M%S')+'-'+s['CID'][-8:]);a.backup(backup,s)
             if (backup/'gpt-first.bin').read_bytes()!=space['first'] or (backup/'gpt-last.bin').read_bytes()!=space['last']:
                 raise ValueError('GPT changed during preflight; nothing was installed')
@@ -725,7 +658,7 @@ def free_write(a,root,m,manifest,s,space,offset,sectors):
     a.run('"$BB" sh "$P/android-image.sh"')
     checksum=a.shell('sha256sum '+a.t+'/openwrt.ext4.new').split()[0]
     if not re.fullmatch('[a-f0-9]{64}',checksum):raise ValueError('Invalid image checksum')
-    disk='/dev/block/'+s['NODE'].split('p')[0]
+    disk='/dev/block/'+_storage.disk_node(s['NODE'])
     a.run('"$BB" sh "$P/android-write-free.sh" '+env_args([
         disk,s['CID'],s['DISK_SIZE'],offset,sectors,checksum,space['front'],space['tail']]),**({'effect':'root-free-write'} if GUI else {}))
     # Independent verification after the device-side comparison, before
@@ -734,7 +667,7 @@ def free_write(a,root,m,manifest,s,space,offset,sectors):
             f'dd if={disk} bs=512 skip={space["tail"]} count={s["DISK_SIZE"]-space["tail"]} 2>/dev/null')!=last:
         raise ValueError('GPT readback failed; boot selection was not changed')
     live=a.live();a.flash(boot(root,m,'part',live,a.slot),m.boot_control(live,a.slot))
-    return Outcome('success',f'Installed in unallocated eMMC: {sectors/2097152:.2f} GiB; Android preserved / 未分配空间安装完成，Android 数据保留。',
+    return Outcome('success',f'Installed in unallocated internal storage: {sectors/2097152:.2f} GiB; Android preserved / 未分配空间安装完成，Android 数据保留。',
                    'Reboot the device manually; the new partition appears after reboot / 手动重启后新分区生效。')
 
 def env_args(values):

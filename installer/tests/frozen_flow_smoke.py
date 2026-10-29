@@ -105,7 +105,7 @@ def child(package):
                 pass
 
             def exec_command(self, command, **kwargs):
-                if command == 'cat /sys/class/block/mmcblk0/device/cid':
+                if (command == 'cat /sys/class/block/mmcblk0/device/cid' or command.endswith('d=$(mu300_storage_disk) && mu300_storage_identity "$d"')):
                     value = cid.encode()
                 elif command.startswith('readlink -f') or command == 'cat /run/mu300/disk-dev':
                     value = b'/dev/mmcblk0p74'
@@ -152,7 +152,7 @@ def child(package):
                 self.host=host
             def exec_command(self,command,**kwargs):
                 if self.host=='192.0.2.1':
-                    if command!='cat /sys/class/block/mmcblk0/device/cid':
+                    if not (command=='cat /sys/class/block/mmcblk0/device/cid' or command.endswith('d=$(mu300_storage_disk) && mu300_storage_identity "$d"')):
                         raise AssertionError('Read another router beyond identity')
                     response=service.dispatch({'protocol':1,'command':'verify_openwrt','params':{
                         'transaction':record['id'],'host':'192.0.2.2','password':'frozen-private-password'}})

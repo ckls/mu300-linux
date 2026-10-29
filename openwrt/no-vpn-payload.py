@@ -4,6 +4,7 @@ import argparse
 import io
 import os
 import re
+import runpy
 from pathlib import Path, PurePosixPath
 import tarfile
 import tempfile
@@ -12,6 +13,7 @@ APPS = {'xray', 'sing-box', 'singbox', 'hev-socks5-tunnel', 'openvpn', 'openconn
         'ocserv', 'tailscale', 'tailscaled', 'zerotier', 'zerotier-one', 'zerotier-cli',
         'zerotier-idtool', 'wireguard-go', 'wg', 'wg-quick', 'ipsec', 'charon',
         'strongswan', 'xl2tpd', 'pptpd', 'sstpc', 'softethervpn', 'mu300-vpn'}
+UI = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'tools/release-ui-policy.py'))
 
 def forbidden(name):
     parts=PurePosixPath(name).parts
@@ -39,16 +41,29 @@ def strip(archive):
     fd,tmp=tempfile.mkstemp(prefix=archive.name+'.no-vpn.',dir=archive.parent)
     os.close(fd)
     try:
+        # Plan small UI/database edits first, then stream the archive. Never
+        # unpack another complete rootfs or leave stale APK ownership records.
+        files = {}
+        with tarfile.open(archive, 'r|gz') as src:
+            for member in src:
+                name = member.name.removeprefix('./')
+                if member.isfile() and UI['candidate'](name):
+                    if member.size > 16 * 1024 * 1024:
+                        raise ValueError('Unexpected UI resource size: ' + name)
+                    files[name] = src.extractfile(member).read()
+        obsolete, changed = UI['plan'](files)
         with tarfile.open(archive,'r|gz') as src,tarfile.open(tmp,'w:gz',compresslevel=6) as dst:
             for member in src:
                 name=member.name.removeprefix('./')
-                if forbidden(name):
+                if forbidden(name) or name in obsolete:
                     removed.append(name);continue
                 if name.startswith('lib/apk/packages/') and any(PurePosixPath(name).name.startswith(app+'-') for app in APPS):
                     raise ValueError('VPN APK installed in base; remove it from package selection: '+name)
                 data=src.extractfile(member) if member.isfile() else None
                 if name=='opt/mu300/bin/mu300-toolkit':
                     content=toolkit(data.read());member.size=len(content);data=io.BytesIO(content)
+                if name in changed:
+                    content=changed[name];member.size=len(content);data=io.BytesIO(content)
                 dst.addfile(member,data)
         os.chmod(tmp,archive.stat().st_mode & 0o777)
         os.replace(tmp,archive)

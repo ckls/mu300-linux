@@ -59,6 +59,33 @@ def cpio_files(stream):
     return found
 
 class Desktop(unittest.TestCase):
+    def test_external_entries_resolve_dependencies_under_a_frozen_host(self):
+        with tempfile.TemporaryDirectory(prefix='installer package ') as temp:
+            root=Path(temp)/'desktop';root.mkdir();support=root/'desktop';support.mkdir()
+            (root/'tools/backend').mkdir(parents=True)
+            for name in ('gpt.py','storage.py'):
+                (support/name).write_bytes((TOP/'installer/backend'/name).read_bytes())
+            (support/'storage-lib.sh').write_bytes((TOP/'rootfs/overlay/opt/mu300/lib/storage.sh').read_bytes())
+            for entry in (root/'OpenWrt-Installer.py',support/'installer.py'):
+                entry.write_bytes((TOP/'desktop/installer.py').read_bytes())
+                script='''import importlib.util,sys
+from pathlib import Path
+sys.frozen=True
+sys.executable=sys.argv[2]
+spec=importlib.util.spec_from_file_location('external_entry',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+assert Path(m._gpt.__file__).resolve()==Path(sys.argv[3]).resolve()
+assert m._storage.part_node('sda',75)=='sda75'
+if Path(sys.argv[1]).name=='OpenWrt-Installer.py':
+    assert m.package_root()==Path(sys.argv[1]).parent
+print('external entry loaded')
+'''
+                result=subprocess.run([sys.executable,'-c',script,str(entry),
+                    str(root/'tools/backend/openwrt-backend.exe'),str(support/'gpt.py')],
+                    cwd=temp,capture_output=True,text=True,timeout=15)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertIn('external entry loaded',result.stdout)
+
     @unittest.skipUnless(importlib.util.find_spec('paramiko'), 'SSH tests need Paramiko')
     def test_update_ignores_old_host_key_cache_and_never_saves_keys(self):
         import paramiko
@@ -424,6 +451,7 @@ desktop_free_loop
     def test_boot_append_leaves_kernel_original_frame_and_log_tail_intact(self):
         with tempfile.TemporaryDirectory() as t:
             assets=Path(t);(assets/'repair').mkdir()
+            (assets/'storage-lib.sh').write_bytes((TOP/'rootfs/overlay/opt/mu300/lib/storage.sh').read_bytes())
             for n in ('storage.sh','install-part.sh','part-prepare.sh','part-progress.sh','ext4-geometry.sh','mu300-gpt'):
                 (assets/n).write_bytes((TOP/'desktop/boot'/n).read_bytes())
             for n,source in (('original-init',TOP/'boot/init'),('build-boot-image.py',TOP/'boot/build-boot-image.py')):(assets/n).write_bytes(source.read_bytes())

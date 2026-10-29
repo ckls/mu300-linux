@@ -14,7 +14,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-from . import gpt
+from . import gpt, storage as storage_io
 from .state import Pending, RecoveryRequired, atomic_json, sha
 from .transport import Adb, push_chunks
 from .boot_image import boot_installed_e5, boot_installed_mu300
@@ -264,25 +264,16 @@ class Adapter:
             device['profile'] = self.legacy.android_profile(device['model'] + '\n' + properties['ro.product.device'], properties['ro.board.platform'])
         # Trial boot uses only the boot signature, boot-chain check and misc.
         # Do not access the root filesystem to detect an installation.
-        text = self.adb.shell('set -e; d=$(readlink -f /dev/block/by-name/userdata); n=${d##*/}; b=${n%p*}; '
-            'echo NODE=$n; echo CID=$(cat /sys/class/block/$b/device/cid); '
-            'echo START=$(cat /sys/class/block/$n/start); echo SIZE=$(cat /sys/class/block/$n/size); '
-            'echo DISK_SIZE=$(cat /sys/class/block/$b/size); '
-            'echo FREE=$(df -Pk /data | tail -n1 | awk \'{print $4}\'); '
-            'echo SOURCE=$(awk \'$2=="/data" {print $1;exit}\' /proc/mounts); '
-            'for u in /sys/class/block/${b}p*/uevent; do '
-            'grep -qE "^PARTNAME=(e5root|mu300root)$" "$u" && { n=${u%/uevent}; echo ROOT=${n##*/}; } || true; done; '
-            'cards=""; for p in /sys/class/block/mmcblk*; do k=${p##*/}; '
+        text = self.adb.shell(storage_io.inventory_script(self.root), root=True)
+        storage = storage_io.parse_inventory(text)
+        # Removable MMC detection remains separate from internal UFS LUNs.
+        cards = self.adb.shell('cards=""; for p in /sys/class/block/mmcblk*; do k=${p##*/}; '
             'case $k in *p[0-9]*|*boot*) continue;; esac; '
-            '[ "$k" = "$b" ] || cards="$cards $k"; done; '
+            '[ "$(cat "$p/device/type" 2>/dev/null)" = SD ] || continue; cards="$cards $k"; done; '
             'set -- $cards; if [ "$#" -eq 1 ]; then '
-            'if [ -b /dev/block/"${1}p1" ]; then echo TF=/dev/block/"${1}p1"; '
-            'elif [ -b /dev/block/"$1" ]; then echo TF=/dev/block/"$1"; fi; fi', root=True)
-        storage = dict(line.split('=', 1) for line in text.splitlines() if '=' in line)
-        if not re.fullmatch(r'mmcblk\d+p\d+', storage['NODE']) or not re.fullmatch('[a-f0-9]{32}', storage['CID']):
-            raise ValueError('Cannot establish eMMC identity / 无法确认闪存身份')
-        for key in ('START', 'SIZE', 'DISK_SIZE', 'FREE'):
-            storage[key] = int(storage[key])
+            'if [ -b /dev/block/"${1}p1" ]; then echo /dev/block/"${1}p1"; '
+            'elif [ -b /dev/block/"$1" ]; then echo /dev/block/"$1"; fi; fi',root=True).strip()
+        if cards: storage['TF'] = cards
         encrypted = properties['ro.crypto.state'] == 'encrypted' or properties['ro.crypto.type'] in ('file', 'block') or storage['SOURCE'].startswith(('/dev/block/dm-', '/dev/mapper/'))
         device.update(cid=storage['CID'], storage=storage, encrypted=encrypted,
                       encryption_state=properties['ro.crypto.state'], encryption_type=properties['ro.crypto.type'],
@@ -323,10 +314,11 @@ class Adapter:
         return device
 
     def read_gpt(self, storage):
-        disk = '/dev/block/' + storage['NODE'].split('p')[0]
+        disk = '/dev/block/' + storage_io.disk_node(storage['NODE'])
         sectors = storage['DISK_SIZE']
-        primary = self.adb.read(f'dd if={disk} bs=512 skip=1 count=1 2>/dev/null')
-        backup = self.adb.read(f'dd if={disk} bs=512 skip={sectors-1} count=1 2>/dev/null')
+        primary_cmd,backup_cmd=storage_io.gpt_header_commands(storage)
+        primary = self.adb.read(primary_cmd)
+        backup = self.adb.read(backup_cmd)
         front, tail = gpt.gpt_backup_layout(primary, backup, sectors)
         first = self.adb.read(f'dd if={disk} bs=512 count={front} 2>/dev/null')
         last = self.adb.read(f'dd if={disk} bs=512 skip={tail} count={sectors-tail} 2>/dev/null')
@@ -469,13 +461,15 @@ class Adapter:
         data = dict(node=s['NODE'], cid=s['CID'], start=s['START'], size=s['SIZE'])
         state = dict(version=2, phase='awaiting-android', token=token, serial=record['device']['serial'],
                      model=record['device']['model'], data=data, target=s['SIZE'], need=plan['openwrt_bytes']//512,
+                     android_slot=record['device']['slot'].removeprefix('_'),
+                     linux_slot='b' if record['device']['slot']=='_a' else 'a',
                      root_start=plan['gap_start'], grow=int(args.grow_fs), raw_size=raw, apn='',
                      ssid=m.default_hotspot_name(), key=secrets.token_urlsafe(12),
                      boot_sha=sha(self.root/'files/boot.img'), image_sha=sha(self.root/'files/openwrt.ext4.gz'))
         path = directory/'transaction.json'
         atomic_json(path, state)
         self.saved(path, state)
-        disk = '/dev/block/'+s['NODE'].split('p')[0]
+        disk = '/dev/block/'+storage_io.disk_node(s['NODE'])
         for name, content in [('before-first', space['first']), ('before-last', space['last']), ('new-first', first), ('new-last', last),
                               ('marker', ('E5-PART-PREPARED-V2 '+token+'\n').encode().ljust(512, b'\0'))]:
             local = directory/(name+'.bin')

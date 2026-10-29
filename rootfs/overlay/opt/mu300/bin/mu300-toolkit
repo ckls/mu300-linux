@@ -8,7 +8,6 @@
 #   mu300-toolkit apply        apply the saved settings: performance profile, TTL (boot service)
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 CONF=/etc/mu300/toolkit.conf
-VPN_CONF=/etc/mu300/vpn.conf
 CPUFREQ=/sys/devices/system/cpu/cpufreq
 GPU=$(ls -d /sys/class/devfreq/*.gpu 2>/dev/null | head -n1)
 # The U30 Air's battery: "battery" under 5.4 (the vendor charger manager), "sc27xx-fgu" under mainline. The F50 has
@@ -174,7 +173,7 @@ sec == "net" && /:/ {
     cur["rx_" ifc] = f[1]; cur["tx_" ifc] = f[9]
 }
 sec == "load" { if (NF == 5) load = $1 " " $2 " " $3; else up = int($1) }
-sec == "disk" && $3 ~ /^mmcblk[0-9]+$/ { cur["dw"] += $10; cur["dr"] += $6 }
+sec == "disk" && $3 ~ /^(mmcblk[0-9]+|sd[a-z]+)$/ { cur["dw"] += $10; cur["dr"] += $6 }
 sec == "sys" {
     i = index($0, ":"); path = substr($0, 1, i - 1); val = substr($0, i + 1)
     n = split(path, pp, "/"); leaf = pp[n]; node = pp[n - 1]
@@ -587,36 +586,6 @@ menu_wifi() {
     done
 }
 
-vpn_enabled() { [ -r "$VPN_CONF" ] && grep -q '^ENABLE=1' "$VPN_CONF"; }
-menu_vpn() {
-    while :; do
-        title "VPN (VLESS)"
-        printf '  service: %s   config: %s\n\n' "$(state_color "$(svc status mu300-vpn)")" \
-            "$( [ -r "$VPN_CONF" ] && (vpn_enabled && echo "enabled" || echo "disabled") || echo "missing")"
-        /opt/mu300/bin/mu300-vpn status 2>/dev/null | sed 's/^/  /'
-        menu_items="Turn on (ENABLE=1, start at boot)|Turn off (stop, remove kill switch)|Edit config ($VPN_CONF)|Restart"
-        printf '\n'
-        i=1; IFS='|'; for l in $menu_items; do printf '  %s%d%s  %s\n' "$C" "$i" "$N" "$l"; i=$((i + 1)); done; unset IFS
-        printf '\n  %s0%s  Back\n\n  > ' "$C" "$N"
-        read -r c || return
-        case $c in
-            1) [ -r "$VPN_CONF" ] || cp /etc/mu300/vpn.conf.example "$VPN_CONF" 2>/dev/null
-               chmod 600 "$VPN_CONF"
-               if grep -q '^VLESS_URI=""' "$VPN_CONF" || ! grep -q '^VLESS_URI=' "$VPN_CONF"; then
-                   echo "  set VLESS_URI first (Edit config)"; pause; continue
-               fi
-               sed -i 's/^ENABLE=.*/ENABLE=1/' "$VPN_CONF"; svc enable mu300-vpn; sleep 3 ;;
-            2) [ -r "$VPN_CONF" ] && sed -i 's/^ENABLE=.*/ENABLE=0/' "$VPN_CONF"
-               svc disable mu300-vpn; /opt/mu300/bin/mu300-vpn off ;;
-            3) [ -r "$VPN_CONF" ] || { cp /etc/mu300/vpn.conf.example "$VPN_CONF" 2>/dev/null; chmod 600 "$VPN_CONF"; }
-               ${EDITOR:-$(command -v nano || echo vi)} "$VPN_CONF"
-               vpn_enabled && svc restart mu300-vpn ;;
-            4) svc restart mu300-vpn; sleep 3 ;;
-            *) return ;;
-        esac
-    done
-}
-
 # Live radio quality: move the device around and watch RSRP. The watchdog is paused while this runs, because only
 # one reader can have the modem's AT channel at a time.
 menu_signal() {
@@ -668,7 +637,7 @@ menu_network() {
     while :; do
         menu "Network" "Live traffic (monitor)" "Interfaces and addresses" "Mobile data: status" \
             "Mobile signal (live, for finding a better spot)" "Mobile data: reconnect" "Mobile data: disconnect" \
-            "Wi-Fi (hotspot, or join a network)" "VPN" "TTL of mobile data (hide hotspot use)"
+            "Wi-Fi (hotspot, or join a network)" "TTL of mobile data (hide hotspot use)"
         case $CHOICE in
             1) monitor ;;
             2) title "Interfaces"; { ip -br addr 2>/dev/null || ip addr; } | grep -vE '^(dummy|tunl|gre|erspan|ip_vti|ip6_vti|sit|ip6tnl|ip6gre|sipa_eth[1-9])' | sed 's/^/  /'
@@ -679,14 +648,13 @@ menu_network() {
                echo "  reconnect started"; pause ;;
             6) if is_openwrt; then ifdown wan; else svc stop mu300-mobile-data; fi; pause ;;
             7) menu_wifi ;;
-            8) menu_vpn ;;
-            9) menu_ttl ;;
+            8) menu_ttl ;;
             *) return ;;
         esac
     done
 }
 
-MU300_SERVICES="mu300-vendor mu300-wifi mu300-hotspot mu300-lan mu300-mobile-data mu300-mobile-data-watch mu300-bluetooth mu300-vpn mu300-firewall mu300-thermal-guard mu300-zram mu300-toolkit"
+MU300_SERVICES="mu300-vendor mu300-wifi mu300-hotspot mu300-lan mu300-mobile-data mu300-mobile-data-watch mu300-bluetooth mu300-firewall mu300-thermal-guard mu300-zram mu300-toolkit"
 menu_services() {
     while :; do
         title "Services"
@@ -773,7 +741,7 @@ menu_system() {
 main_menu() {
     while :; do
         menu "Main menu" "Monitor (task manager)" "Performance profile (CPU/GPU)" "Stress test (CPU/GPU/network)" \
-            "Network, mobile data, VPN" "Services" "System (password, hostname, timezone, reboot)" "Summary"
+            "Network, mobile data" "Services" "System (password, hostname, timezone, reboot)" "Summary"
         case $CHOICE in
             1) monitor ;;
             2) menu_performance ;;

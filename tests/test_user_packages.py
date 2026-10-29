@@ -632,16 +632,15 @@ class Service(ShellTest):
             self.assertEqual(self.rec('state'), 'offline\n')
             self.assertEqual(self.dhcp(), before)
 
-    def test_dns_untouched_with_the_vpn_on(self):
+    def test_dns_untouched_when_custom_resolver_owns_the_port(self):
         for shell in self.each_shell():
             self.setup_openwrt(server='127.0.0.1#7874 8.8.8.8')
-            write(self.R, {'etc/mu300/vpn.conf': 'ENABLE=1\nSECRET=do-not-print\n'})
+            write(self.R, {'etc/mu300/local-resolver.conf': 'ENABLE=1\nDNS_PORT=7874\nSECRET=do-not-print\n'})
             (self.tmp / 'online').write_text('')
             (self.tmp / 'missing').write_text('luci-app-openclash\n')
             before = self.dhcp()
             r = self.run_upk(shell, 'run')
             self.assertEqual(self.dhcp(), before)
-            self.assertIn('the VPN is on', self.rec('note'))
             self.assertNotIn('do-not-print', r.stdout + r.stderr + self.rec('log') + self.run_upk(shell, 'status').stdout)
             self.run_upk(shell, 'repair-dns')
             self.assertEqual(self.dhcp(), before)

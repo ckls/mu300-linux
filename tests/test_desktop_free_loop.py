@@ -53,12 +53,14 @@ class RealLoop(unittest.TestCase):
             for tool in ('e2fsck','resize2fs'):(repair/'usr/sbin'/tool).symlink_to(shutil.which(tool))
             shutil.copyfile(TOP/'desktop/android-loop.sh',payload/'android-loop.sh')
             shutil.copyfile(TOP/'desktop/boot/ext4-geometry.sh',payload/'ext4-geometry.sh')
+            # This fixture substitutes identity only; production uses real sysfs.
+            (payload/'storage-lib.sh').write_text('mu300_storage_identity() { echo '+('a'*32)+'; }\n')
             sysroot=base/'sys';(sysroot/'device').mkdir(parents=True)
             (sysroot/'device/cid').write_text('a'*32);(sysroot/'size').write_text(str(total))
             script=(TOP/'desktop/android-write-free.sh').read_text()
             # Substitute only Android's identity/app binding with fixture data.
             # Actual loop ioctls, raw dd, ext4 repair/growth, mount and GPT writes run.
-            script=script.replace('/dev/block/mmcblk[0-9]',str(disk)).replace('/sys/class/block/$node',str(sysroot))
+            script=script.replace('/dev/block/mmcblk[0-9]*|/dev/block/sd[a-z]*',str(disk)).replace('/sys/class/block/$node',str(sysroot))
             script=script.replace('[ -b "$disk" ]','[ -f "$disk" ]')
             script=script.replace('/system/bin/losetup',shutil.which('losetup')).replace(' -S ',' --sizelimit ')
             script=script.replace("grep -q -- '-S'","grep -q -- '--sizelimit'")

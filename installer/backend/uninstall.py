@@ -14,7 +14,7 @@ import time
 import zlib
 import uuid
 
-from . import gpt
+from . import gpt, storage as storage_io
 from .boot_image import inspect_linux_boot, trial_control
 from .state import Cancelled, RecoveryRequired, atomic_json, sha
 from .transport import push_chunks
@@ -31,14 +31,16 @@ def partition(info, name):
 
 
 def table(first):
-    at, count = struct.unpack_from('<QI', first, 584)
-    return first[at*512:at*512+count*128]
+    block = gpt.sector_size(first)
+    at, count = struct.unpack_from('<QI', first, block+72)
+    return first[at*block:at*block+count*128]
 
 
 def with_table(current, updated, sectors):
+    block = gpt.sector_size(current[0])
     output = []
-    for raw, header, offset in ((current[0], 512, struct.unpack_from('<Q', current[0], 584)[0]*512),
-                                (current[1], len(current[1])-512, 0)):
+    for raw, header, offset in ((current[0], block, struct.unpack_from('<Q', current[0], block+72)[0]*block),
+                                (current[1], len(current[1])-block, 0)):
         raw = bytearray(raw); raw[offset:offset+len(updated)] = updated
         struct.pack_into('<I', raw, header+88, zlib.crc32(updated))
         struct.pack_into('<I', raw, header+16, 0)
@@ -70,7 +72,7 @@ def device_layout(current, sectors, name):
     expands = root['start'] == data['end']+1
     target = {**data,'end':root['end']} if expands else data
     updated[(root['n']-1)*128:root['n']*128] = bytes(128)
-    struct.pack_into('<Q',updated,(data['n']-1)*128+40,target['end'])
+    struct.pack_into('<Q',updated,(data['n']-1)*128+40,(target['end']+1)//(info['sector_size']//512)-1)
     return with_table(current,updated,sectors), target, root, expands
 
 
@@ -81,7 +83,7 @@ def restored_layout(original, current, sectors, name):
     data, root = partition(now, 'userdata'), partition(now, name)
     prior = partition(old, 'userdata')
     oldtable, newtable = table(original[0]), table(current[0])
-    if (original[0][568:584] != current[0][568:584] or old['front'] != now['front'] or
+    if (original[0][old['sector_size']+56:old['sector_size']+72] != current[0][now['sector_size']+56:now['sector_size']+72] or old['front'] != now['front'] or
             old['tail'] != now['tail'] or len(oldtable) != len(newtable) or data['n'] != prior['n'] or
             data['start'] != prior['start'] or root['n']-1 not in old['empty']):
         raise RecoveryRequired('Original GPT identity differs / 原安装备份与当前 GPT 身份不符')
@@ -103,7 +105,7 @@ def restored_layout(original, current, sectors, name):
         raise RecoveryRequired('Unallocated-space origin cannot be proven / 无法确认原未分配空间范围')
     updated = bytearray(newtable)
     updated[(root['n']-1)*128:root['n']*128] = oldtable[(root['n']-1)*128:root['n']*128]
-    struct.pack_into('<Q', updated, (data['n']-1)*128+40, prior['end'])
+    struct.pack_into('<Q', updated, (data['n']-1)*128+40, (prior['end']+1)//(now['sector_size']//512)-1)
     output = with_table(current,updated,sectors)
     verified = gpt.gpt_space(*output, sectors)
     if any(p['name'] == name for p in verified['parts']):
@@ -113,7 +115,7 @@ def restored_layout(original, current, sectors, name):
 
 def android_volume(adb, device, *, allow_small=False):
     source = adb.shell('readlink -f '+shlex.quote(device['storage']['SOURCE']), root=True).strip()
-    if not re.fullmatch(r'/dev/(?:block/)?(?:mmcblk\d+p\d+|dm-\d+)', source):
+    if not re.fullmatch(r'/dev/(?:block/)?(?:mmcblk\d+p\d+|sd[a-z]+[1-9][0-9]*|dm-\d+)', source):
         raise RecoveryRequired('Cannot identify Android data mapping / 无法确认 Android data 映射设备')
     mapped = int(adb.shell('cat /sys/class/block/'+source.rsplit('/',1)[-1]+'/size', root=True).strip())*512
     raw = adb.read('dd if='+source+' bs=1024 skip=1 count=1 2>/dev/null')
@@ -178,8 +180,8 @@ def prepare(adapter, store, device, authorize_reset=None):
         after, data, root, expands = device_layout(current,total,name)
         proof = inspect_installation(adapter,device,root)
         source = None
-    node = storage['NODE'].split('p')[0]
-    if (storage['ROOT'] != node+'p'+str(root['n']) or storage['START'] != data['start'] or
+    node = storage_io.disk_node(storage['NODE'])
+    if (storage['ROOT'] != storage_io.part_node(node,root['n']) or storage['START'] != data['start'] or
             storage['SIZE']*512 != device['userdata_bytes']):
         raise RecoveryRequired('Kernel partition nodes differ from GPT; reboot Android / 内核分区节点与 GPT 不符，请重启 Android')
     for bootname in ('boot_a','boot_b','misc'):
@@ -224,7 +226,7 @@ def prepare(adapter, store, device, authorize_reset=None):
     metadata = {'version':2 if source else 3,'action':action,'reset_authorized':wipe,'total':total,'front':space['front'],'tail':space['tail'],
                 'tool_hashes':{name:hashlib.sha256(content).hexdigest() for name,content in tools.items()},
                 'root_start':root['start'],'root_size':root['end']-root['start']+1,
-                'nodes':{p['name']:node+'p'+str(p['n']) for p in space['parts']
+                'nodes':{p['name']:storage_io.part_node(node,p['n']) for p in space['parts']
                          if p['name'] in ('userdata',name,'misc','boot_a','boot_b')}, 'volume':volume}
     if proof:
         metadata['installation_evidence'] = proof
@@ -264,7 +266,7 @@ class Uninstaller:
             raise RecoveryRequired('Incomplete uninstall journal / 卸载记录不完整')
         storage = self.r['device']['storage']
         if (self.r['package'].get('adapter') not in ('e5','mu300') or
-                not re.fullmatch(r'mmcblk[0-9]p[1-9][0-9]*',storage.get('NODE',''))):
+                not re.fullmatch(r'(?:mmcblk[0-9]+p|sd[a-z]+)[1-9][0-9]*',storage.get('NODE',''))):
             raise RecoveryRequired('Invalid uninstall disk node / 卸载记录中的磁盘节点无效')
         total = storage['DISK_SIZE']
         before = (self.files['before-first'],self.files['before-last'])
@@ -299,8 +301,8 @@ class Uninstaller:
                     raise RecoveryRequired('Uninstall preservation evidence is incomplete / 卸载保数据证据不完整')
         info = gpt.gpt_space(*before,total)
         data = partition(info,'userdata')
-        disk = storage['NODE'].split('p')[0]
-        expected_nodes = {label:disk+'p'+str(partition(info,label)['n'])
+        disk = storage_io.disk_node(storage['NODE'])
+        expected_nodes = {label:storage_io.part_node(disk,partition(info,label)['n'])
                           for label in ('userdata',name,'misc','boot_a','boot_b')}
         if (calculated != list(after) or self.meta['total'] != total or self.meta['front'] != info['front'] or
                 self.meta['tail'] != info['tail'] or self.meta['nodes'] != expected_nodes or
@@ -317,7 +319,7 @@ class Uninstaller:
 
     def current(self):
         adb = self.adapter.adb
-        disk = '/dev/block/'+self.r['device']['storage']['NODE'].split('p')[0]
+        disk = '/dev/block/'+storage_io.disk_node(self.r['device']['storage']['NODE'])
         front, tail, total = (self.meta[k] for k in ('front','tail','total'))
         return (adb.read(f'dd if={disk} bs=512 count={front} 2>/dev/null'),
                 adb.read(f'dd if={disk} bs=512 skip={tail} count={total-tail} 2>/dev/null'))
@@ -393,7 +395,7 @@ class Uninstaller:
         if android_header[:8] != b'ANDROID!' or android_header == linux_header:
             raise RecoveryRequired('Current Android boot cannot be distinguished from Linux / 无法区分当前 Android 与 Linux 启动镜像')
         nodes = self.meta['nodes']; rootname = 'e5root' if self.adapter.kind == 'e5' else 'mu300root'
-        request = [device['cid'],device['storage']['NODE'].split('p')[0],nodes['userdata'],nodes[rootname],
+        request = [device['cid'],storage_io.disk_node(device['storage']['NODE']),nodes['userdata'],nodes[rootname],
                    nodes['misc'],nodes['boot_'+slot],nodes['boot_'+other]]
         request += [self.meta[k] for k in ('total','front','tail','root_start','root_size')]
         request += [int(self.r['plan']['wipe']),boot_bytes,android_sha]
@@ -403,6 +405,7 @@ class Uninstaller:
                         volume['filesystem_bytes'],volume.get('uuid','0'*32)]
         files = {'openwrt-uninstall/'+name:content for name,content in self.files.items()}
         files.update(tools)
+        files['openwrt-uninstall/storage.sh'] = storage_io.library(self.adapter.root).encode()
         files.update({'openwrt-uninstall/request':(':'.join(map(str,request))+'\n').encode(),
                       'openwrt-uninstall/before-bcb':before[:2048],
                       'openwrt-uninstall/recovery-bcb':bytes(bcb) if self.r['plan']['wipe'] else bytes(2048),
@@ -426,7 +429,7 @@ class Uninstaller:
         for local, name in ((path,'boot.img'),(self.folder/'trial.bin','trial.bin')):
             push_chunks(adb.call,lambda script:adb.shell(script,root=True),local,remote+'/'+name,self.ctx)
         bootdev = '/dev/block/by-name/boot_'+other
-        disk = '/dev/block/'+device['storage']['NODE'].split('p')[0]
+        disk = '/dev/block/'+storage_io.disk_node(device['storage']['NODE'])
         layout_checks = (
             f'[ "$(dd if={disk} bs=512 count={self.meta["front"]} | sha256sum | cut -d" " -f1)" = {hashlib.sha256(self.files["before-first"]).hexdigest()} ]; '
             f'[ "$(dd if={disk} bs=512 skip={self.meta["tail"]} count={self.meta["total"]-self.meta["tail"]} | sha256sum | cut -d" " -f1)" = {hashlib.sha256(self.files["before-last"]).hexdigest()} ]; ')

@@ -33,6 +33,7 @@ idle_partition() {
 }
 
 # BEGIN DEVICE WORKER
+. /openwrt-uninstall/storage.sh
 mkdir -p /run/openwrt-uninstall
 exec >>/run/openwrt-uninstall/debug.log 2>&1
 fail() {
@@ -49,9 +50,9 @@ sha256sum -c SHA256SUMS
 IFS=: read -r cid disk_node data_node root_node misc_node android_node linux_node total front tail start root_size wipe boot_bytes boot_sha action data_start data_size fs_before fs_uuid extra < request
 [ -z "$extra" ] && [ "${#cid}" = 32 ] && [ "${#boot_sha}" = 64 ]
 case "$cid$boot_sha" in *[!0-9a-f]*) exit 2 ;; esac
-case "$disk_node" in mmcblk[0-9]) ;; *) exit 2 ;; esac
+case "$disk_node" in mmcblk[0-9]*|sd[a-z]*) ;; *) exit 2 ;; esac
 for node in "$data_node" "$root_node" "$misc_node" "$android_node" "$linux_node"; do
-    case "$node" in "$disk_node"p[0-9]*) ;; *) exit 2 ;; esac
+    case "$node" in "$disk_node"p[0-9]*|"$disk_node"[0-9]*) ;; *) exit 2 ;; esac
     case "$node" in *[!a-z0-9]*) exit 2 ;; esac
 done
 for n in "$total" "$front" "$tail" "$start" "$root_size" "$boot_bytes"; do
@@ -75,7 +76,7 @@ misc=/dev/$misc_node
 android=/dev/$android_node
 linux=/dev/$linux_node
 [ "$android_node" != "$linux_node" ]
-[ "$(cat /sys/class/block/$disk_node/device/cid)" = "$cid" ]
+[ "$(mu300_storage_identity "$disk_node")" = "$cid" ]
 [ "$(cat /sys/class/block/$disk_node/size)" = "$total" ]
 [ "$front" -ge 3 ] && [ "$front" -le 4096 ] && [ "$tail" -gt "$((total-4096))" ] && [ "$tail" -lt "$total" ]
 [ "$start" -ge "$front" ] && [ "$((start%8))" = 0 ] && [ "$root_size" -ge 4194304 ] && [ "$((start+root_size))" -le "$tail" ]

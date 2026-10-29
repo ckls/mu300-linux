@@ -115,3 +115,19 @@ manifest、SHA-256 和单份 boot/rootfs。`.building-*` 不是正式包。
 
 报告每个包的完整路径、构建提交、校验结果及失败项。原生 Mac 冒烟通过不等于
 设备硬件验证；本次本地构建不得擅自连接或刷入用户机器。
+
+
+## 在线保数据缩容工具
+
+图形安装器的 F2FS 在线缩容使用仓库内置的静态 ARM64 小工具。
+修改 installer/device/f2fs-online.c 后，在既有 WSL 工作区通过固定入口执行：
+
+```sh
+python3 tools/build-release.py run --workspace /home/kano/openwrt-build \
+  --label online-f2fs-helper -- python3 installer/build-online-helper.py
+```
+
+构建器先跑原生 C 回归，再生成 installer/device/f2fs-online-arm64 和 build.json。
+Windows/macOS 原生打包消费同一受源码哈希绑定的工具，不另找 Android Python，
+不为此重编内核或复制 rootfs。源变化必须重编工具及两个原生安装器；禁止修改
+指纹绕过。工作流、证据及硬件验收边界见 ONLINE-F2FS-INSTALL-20261029.zh-CN.md。

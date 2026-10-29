@@ -99,7 +99,7 @@ esac''')
     def test_init_pool_environment_matches_for_both_sms_receivers_and_at_owners(self):
         for shell in self.shells:
             for configured,expected in [(self.legacy,self.current),(self.tmp/'custom dir',self.tmp/'custom dir')]:
-                for init,entry in [('mu300-atd','start_single_sim'),('mu300-smsd','start_service')]:
+                for init,entry in [('mu300-atd','start_service'),('mu300-smsd','start_service')]:
                     source=(TOP/'openwrt/overlay/etc/init.d'/init).read_text()
                     source=source.replace('/dev/stty_nr1','/dev/null')
                     if init=='mu300-atd':
@@ -107,6 +107,8 @@ esac''')
                         service=service[service.index('MODEMD_BROKERS='):].replace('/opt/mu300/bin/mu300-device','mu300-device')
                         fixture=self.tmp/'modemd-layout.sh';fixture.write_text('modemd_require() { :; }\n'+service)
                         source=source.replace('. "${MU300_MODEMD_SERVICE_LIB:-/opt/mu300/lib/modemd-service.sh}"',f'. "{fixture}"')
+                        source=source.replace('/opt/mu300/bin/mu300-device','mu300-device')
+                        source=source.replace('/opt/mu300/bin/mu300-platform-config','true')
                         self.stub('mu300-device','echo f50')
                     code=source+'''\nprocd_open_instance() { instance=$1; }
 procd_close_instance() { :; }

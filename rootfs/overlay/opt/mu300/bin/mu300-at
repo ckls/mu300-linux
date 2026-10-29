@@ -130,7 +130,10 @@ if [ -p "$DIR/cmd" ]; then
     # unlinked FIFOs while this client keeps the global command lock.  O_RDWR
     # never blocks; with no daemon the answer timeout below releases the lock.
     native_gate || exit 1
-    exec 9<> "$DIR/cmd" 2>/dev/null || {
+    # Keep stderr attached to the caller. A bare exec with 2>/dev/null also
+    # silenced every later timeout/final-response diagnostic in this client.
+    # `command` makes a failed special-builtin redirection return to this guard.
+    { command exec 9<> "$DIR/cmd"; } 2>/dev/null || {
         echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }
     printf '%s %s %s\n' "$T" "$answer" "$cmd" >&9 || {
         exec 9>&-; echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }

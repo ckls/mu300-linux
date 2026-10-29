@@ -2,7 +2,7 @@
 // The SD card's partition table, for the card install's update (openwrt/device-install-image.sh): OpenWrt
 // has no sgdisk, and the card's root is mounted while it runs, so the kernel is not asked to re-read the
 // table -- a partition added here is written through the whole disk at its offset, and appears as a node
-// at the next boot.  GPT only, 512-byte sectors; both copies (primary and backup) are rewritten.
+// at the next boot.  GPT with 512B/4KiB logical blocks; public geometry uses 512-byte sectors; both copies (primary and backup) are rewritten.
 //
 //   mu300-gpt list DISK                  N START END NAME, one line per partition
 //   mu300-gpt uuid DISK N                the unique GUID of partition N
@@ -52,15 +52,23 @@ let cmd = ARGV[0], disk = ARGV[1];
 if (!(cmd in ['list', 'add', 'uuid', 'plan', 'resize', 'carve-userdata']) || !disk)
 	die('usage: mu300-gpt list DISK | uuid DISK N | add DISK NAME SECTORS | resize DISK NAME SECTORS | plan DISK NAME:SECTORS ...');
 let h = fs.open(disk, (cmd == 'add' || cmd == 'resize' || cmd == 'carve-userdata') ? 'r+' : 'r') || die(`${disk}: ${fs.error()}`);
+// Detect real GPT logical blocks before interpreting its LBA fields.
+let sizes = [];
+for (let size in [512, 4096]) {
+    h.seek(size, 0);
+    if (h.read(8) == 'EFI PART') push(sizes, size);
+}
+if (length(sizes) != 1) die('missing or ambiguous GPT logical block size');
+let block = sizes[0], factor = int(block / 512);
 function rd(lba, count) {
-	h.seek(lba * 512, 0);
-	let s = h.read(count * 512);
-	if (length(s) != count * 512)
+	h.seek(lba * block, 0);
+	let s = h.read(count * block);
+	if (length(s) != count * block)
 		die(`${disk}: short read at sector ${lba}`);
 	return s;
 }
 function wr(lba, s) {
-	h.seek(lba * 512, 0);
+	h.seek(lba * block, 0);
 	h.write(s) == length(s) || die(`${disk}: write failed at sector ${lba}`);
 }
 
@@ -70,15 +78,15 @@ function load(lba) {
 	if (substr(hd, 0, 8) != 'EFI PART')
 		die(`no GPT header at sector ${lba}`);
 	let hsize = le(hd, 12, 4);
-	if (hsize < 92 || hsize > 512)
+	if (hsize < 92 || hsize > block)
 		die(`odd GPT header size ${hsize}`);
 	if (crc32(put(substr(hd, 0, hsize), 16, lebytes(0, 4))) != le(hd, 16, 4))
 		die(`the GPT header at sector ${lba} fails its checksum`);
-	let g = { lba: lba, hd: hd, hsize: hsize, alt: le(hd, 32, 8), first: le(hd, 40, 8), last: le(hd, 48, 8),
+	let g = { lba: lba, hd: hd, hsize: hsize, alt: le(hd, 32, 8), first: le(hd, 40, 8) * factor, last: (le(hd, 48, 8) + 1) * factor - 1,
 		elba: le(hd, 72, 8), num: le(hd, 80, 4), esize: le(hd, 84, 4) };
 	if (g.esize != 128 || g.num < 1 || g.num > 1024)
 		die(`odd GPT table (${g.num} entries of ${g.esize} bytes)`);
-	g.tab = substr(rd(g.elba, int((g.num * 128 + 511) / 512)), 0, g.num * 128);
+	g.tab = substr(rd(g.elba, int((g.num * 128 + block - 1) / block)), 0, g.num * 128);
 	if (crc32(g.tab) != le(hd, 88, 4))
 		die(`the GPT table of the header at sector ${lba} fails its checksum`);
 	return g;
@@ -102,7 +110,7 @@ for (let i = 0; i < p.num; i++) {
 			break;
 		name += (c < 128) ? chr(c) : '?';
 	}
-	push(parts, { n: i + 1, start: le(e, 32, 8), end: le(e, 40, 8), name: name });
+	push(parts, { n: i + 1, start: le(e, 32, 8) * factor, end: (le(e, 40, 8) + 1) * factor - 1, name: name });
 }
 
 if (cmd == 'list') {
@@ -145,7 +153,7 @@ function available() {
 	return gaps;
 }
 function allocation(name, want) {
-	if (!match(name ?? '', /^[A-Za-z0-9_-]{1,36}$/) || type(want) != 'int' || want < 2048)
+	if (!match(name ?? '', /^[A-Za-z0-9_-]{1,36}$/) || type(want) != 'int' || want < 2048 || want % factor)
 		die('invalid partition request: name and integer size >= 2048 sectors required');
 	for (let x in parts)
 		if (x.name == name)
@@ -167,7 +175,7 @@ function allocation(name, want) {
 // end: the caller must have shrunk the filesystem inside it first, while it
 // was unmounted. Growing may use free space after it and needs no more.
 function resize_range(name, want) {
-	if (type(want) != 'int' || want < 2048)
+	if (type(want) != 'int' || want < 2048 || want % factor)
 		die('invalid resize request: an integer size >= 2048 sectors is required');
 	let target = null;
 	for (let x in parts)
@@ -222,8 +230,8 @@ if (cmd == 'plan') {
 function commit(tab) {
 	let tcrc = lebytes(crc32(tab), 4);
 	for (let g in [b, p]) {
-		let rest = length(tab) % 512;
-		wr(g.elba, tab + (rest ? substr(rd(g.elba + int(length(tab) / 512), 1), rest) : ''));
+		let rest = length(tab) % block;
+		wr(g.elba, tab + (rest ? substr(rd(g.elba + int(length(tab) / block), 1), rest) : ''));
 		let hd = put(g.hd, 88, tcrc);
 		hd = put(hd, 16, lebytes(0, 4));
 		hd = put(hd, 16, lebytes(crc32(substr(hd, 0, g.hsize)), 4));
@@ -235,7 +243,7 @@ function commit(tab) {
 if (cmd == 'resize') {
 	let range = resize_range(ARGV[2], +ARGV[3]);
 	let entry = substr(p.tab, (range[2] - 1) * 128, 128);
-	entry = put(entry, 40, lebytes(range[1], 8));
+	entry = put(entry, 40, lebytes(int((range[1] + 1) / factor) - 1, 8));
 	commit(put(p.tab, (range[2] - 1) * 128, entry));
 	h.close();
 	print(`${ARGV[2]} ${range[2]} ${range[0]} ${range[1]}\n`);
@@ -261,7 +269,7 @@ if (cmd == 'carve-userdata') {
 	available();
 	carve = [r[1] + 1, r[1] + root_size];
 	let entry = substr(p.tab, (r[2] - 1) * 128, 128);
-	p.tab = put(p.tab, (r[2] - 1) * 128, put(entry, 40, lebytes(r[1], 8)));
+	p.tab = put(p.tab, (r[2] - 1) * 128, put(entry, 40, lebytes(int((r[1] + 1) / factor) - 1, 8)));
 }
 let name = carve ? 'mu300root' : ARGV[2], want = +ARGV[3];
 let range = carve || allocation(name, want);
@@ -275,7 +283,7 @@ for (let i = 0; i < length(name); i++)
 	uname += chr(ord(name, i), 0);
 // the Linux filesystem type, 0FC63DAF-8483-4772-8E79-3D69D8477DE4, in GPT's byte order
 let linux = chr(0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4);
-let entry = linux + guid + lebytes(start, 8) + lebytes(end, 8) + lebytes(0, 8) + uname;
+let entry = linux + guid + lebytes(int(start / factor), 8) + lebytes(int((end + 1) / factor) - 1, 8) + lebytes(0, 8) + uname;
 entry += lebytes(0, 128 - length(entry));
 commit(put(p.tab, empty * 128, entry));
 h.close();

@@ -52,6 +52,10 @@ unset MU300_DEPLOY_ROOT
     # its original scripts stay byte-for-byte unchanged.
     shutil.copyfile(TOP/'tools/android-bootchain.sh', dest/'android-bootchain.sh')
     shutil.copyfile(TOP/'installer/backend/windows_mtp.py', dest/'windows_mtp.py')
+    shutil.copyfile(TOP/'installer/backend/storage.py', dest/'storage.py')
+    shutil.copyfile(TOP/'installer/backend/gpt.py', dest/'gpt.py')
+    shutil.copyfile(TOP/'rootfs/overlay/opt/mu300/lib/storage.sh', dest/'storage-lib.sh')
+    shutil.copyfile(TOP/'rootfs/overlay/opt/mu300/lib/storage.sh', assets/'storage-lib.sh')
     shutil.copyfile(TOP/'android/magisk/mu300-linux-switch/bootchain.sh', dest/'bootchain.sh')
     for p in (TOP/'desktop/boot').iterdir():
         if p.is_file(): shutil.copyfile(p, assets/p.name)

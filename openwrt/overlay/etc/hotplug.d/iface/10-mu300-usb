@@ -1,6 +1,7 @@
 #!/bin/sh
 # Stop the temporary preinit DHCP server only when the real LAN is up.
-[ "$ACTION" = ifup ] && [ "$INTERFACE" = lan ] || exit 0
+[ "$INTERFACE" = lan ] || exit 0
+case "$ACTION" in ifup|ifupdate) ;; *) exit 0 ;; esac
 # RNDIS must be a bridge port before removing its inherited preinit address.
 # Installed bridge configurations can predate the user's switch to RNDIS.
 if [ -e /sys/class/net/rndis0 ]; then
@@ -10,24 +11,22 @@ fi
 pid=$(cat /run/mu300-early-udhcpd.pid 2>/dev/null)
 [ -n "$pid" ] && kill "$pid" 2>/dev/null
 rm -f /run/mu300-early-udhcpd.pid
-# netifd has transferred usb0 to br-lan without changing the management IP or
-# DHCP lease.
-
 # With the RNDIS-only gadget, initramfs gives rndis0 the LAN address to serve
 # early DHCP. netifd can retain that address after enslaving rndis0, creating
 # two equal 192.168.77.0/24 routes; replies then leave through the wrong
 # device and the Windows host cannot even ping br-lan. Keep the IP on br-lan
-# only, after netifd has installed it. This also handles an NCM handoff if
-# that driver ever retains its early address.
-bridge_ip=$(ip -4 -o addr show dev br-lan 2>/dev/null | awk 'NR == 1 { print $4 }')
+# only, after netifd has installed it. The early address can differ from the
+# configured LAN after the user changes subnet: matching only br-lan's IP
+# leaves 192.168.77.1 reachable forever. Bridged gadget ports have no IPv4
+# ownership; all configured LAN addresses belong to br-lan. Leave unbridged
+# interfaces and IPv6 alone, without bringing a link down or rebinding USB.
+bridge_ip=$(ip -4 -o addr show dev br-lan scope global 2>/dev/null | awk 'NR == 1 { print $4 }')
 if [ -n "$bridge_ip" ]; then
 	for nic in usb0 rndis0; do
 		ip -o link show dev "$nic" 2>/dev/null | grep -q 'master br-lan' || continue
-		# Match the address even when preinit and netifd used different prefixes.
-		nic_ip=$(ip -4 -o addr show dev "$nic" 2>/dev/null |
-			awk -v a="${bridge_ip%/*}" '{ split($4, p, "/"); if (p[1] == a) { print $4; exit } }')
-		[ -n "$nic_ip" ] || continue
-		ip addr del "$nic_ip" dev "$nic" 2>/dev/null || true
+		for nic_ip in $(ip -4 -o addr show dev "$nic" scope global 2>/dev/null | awk '{ print $4 }'); do
+			ip -4 addr del "$nic_ip" dev "$nic" 2>/dev/null || true
+		done
 	done
 fi
 

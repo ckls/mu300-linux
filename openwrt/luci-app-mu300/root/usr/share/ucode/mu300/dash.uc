@@ -18,6 +18,15 @@ function text(v) { return v == null || v === '' ? null : replace(''+v,/[\r\n]/g,
 function device(v) { return type(v)=='string' && v!='.' && v!='..' && match(v,/^[A-Za-z0-9_.:-]{1,15}$/) ? v : null; }
 function exists(p) { return fs.stat(ROOT+p)!=null; }
 function executable(p) { return fs.access(ROOT+p,'x')==true; }
+export function sim_state(slot) {
+    if(!(slot in ['0','1']))return 'unknown';
+    let row=obj('/run/mu300-registration/sim'+slot+'.json');
+    // The AT owner records absence only after the SIM was known to be powered.
+    // An empty ICCID or CFUN=0 alone is never proof of removal.
+    if(type(row)!='object' || row.slot!==int(slot) || !exists('/run/mu300-registration/sim-power'+slot) ||
+       !(row.state in ['ready','locked','absent']))return 'unknown';
+    return row.state;
+};
 function call(bus,o,m) { return bus?.call(o,m,{}) || {}; }
 function net(dev) {
     dev=device(dev);
@@ -182,11 +191,6 @@ export function info(slot) {
         if(match(pid,/^[1-9][0-9]*$/) && exists('/proc/'+pid) && fs.stat(ROOT+p+'/cmd')?.type=='fifo')atd=true;
     }
     let urc=fs.stat(ROOT+'/run/mu300-at/urc/stty_nr0.log');
-    let vpn=rd('/etc/mu300/vpn.conf'), engine=null, enabled=false;
-    for(let line in split(vpn,'\n')) {
-        if(line=='ENABLE=1')enabled=true;
-        if(substr(line,0,7)=='ENGINE=')engine=text(substr(line,7));
-    }
     let ht=replace(wifi.htmode || '',/[^0-9]/g,'');
     return {ts:now,uptime:int(rd('/proc/uptime')),host:text(c.get('system','@system[0]','hostname') || rd('/proc/sys/kernel/hostname')),
         model:text(rd('/tmp/sysinfo/model') || replace(rd('/proc/device-tree/model'),/\x00/g,'')),fw,kernel,
@@ -201,10 +205,10 @@ export function info(slot) {
             country:text(wifi.country),enc:wifi.enc || 'none',hidden:wifi.hidden ?? null,hostapd:hapd.status=='ENABLED'?1:0,
             clients:stations.rows,clients_n:stations.count},
         lan:{leases:length(leases),ip:address(rows4,lan,false),list:leases},
-        modem:{alive:atd || (urc && now-urc.mtime<240)?1:0,atd:atd?1:0,data_paused:exists('/run/mu300-mobile-data-down')?1:0},
-        boot:boot(),capabilities:{vpn:executable('/etc/init.d/mu300-vpn')?1:0,dualboot:executable('/opt/mu300/bin/mu300-next-boot')?1:0},
-        conns:conntrack(),traffic:obj('/run/unisoc-modem-traffic/view.json'),
-        vpn:{enabled:enabled?1:0,engine,up:exists('/sys/class/net/xtun') || exists('/sys/class/net/sbtun')?1:0}};
+        modem:{alive:atd || (urc && now-urc.mtime<240)?1:0,atd:atd?1:0,data_paused:exists('/run/mu300-mobile-data-down')?1:0,
+            sims:map(['0','1'],n=>({slot:int(n),state:atd?sim_state(n):'unknown'}))},
+        boot:boot(),capabilities:{dualboot:executable('/opt/mu300/bin/mu300-next-boot')?1:0},
+        conns:conntrack(),traffic:obj('/run/unisoc-modem-traffic/view.json')};
 };
 
 function age(path) { let s=fs.stat(ROOT+path); return s?.size>0?time()-s.mtime:-1; }

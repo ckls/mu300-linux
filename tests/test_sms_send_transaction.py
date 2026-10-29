@@ -2,7 +2,11 @@
 import json
 import os
 from pathlib import Path
+import re
 import select
+import shlex
+import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -69,8 +73,8 @@ class SmsTransaction(unittest.TestCase):
                 part.write_text(reply)
                 part.rename(answer)
 
-    def send(self, shell='bash', **extra):
-        return subprocess.run([shell, str(SMS), 'send', '10010', 'test'],
+    def send(self, shell='bash', text='test', **extra):
+        return subprocess.run([shell, str(SMS), 'send', '10010', text],
                               env=dict(self.env, **extra), capture_output=True,
                               text=True, timeout=8)
 
@@ -92,6 +96,32 @@ class SmsTransaction(unittest.TestCase):
         self.assertEqual(self.commands[1][0], 'AT+SPACTCARD=1;+CSCA="+8613800100500",145')
         self.assertTrue(all(c.startswith('AT+SPACTCARD=1;') for c, _ in self.commands))
 
+    def test_multiline_text_is_encoded_inside_pdu_not_fifo_protocol(self):
+        for text in ('first\nsecond', '\nfirst\n\nlast\n', 'a\r\nb\r\n',
+                     'literal\\ntext', '中文\nİstanbul 😀\n', '\n', 'a' * 68 + '\nZ'):
+            with self.subTest(text=repr(text)):
+                self.commands.clear()
+                result = self.send(text=text, MU300_SIM_SLOT='1')
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                commands = [cmd for cmd, _ in self.commands if '+CMGS=' in cmd]
+                self.assertEqual(len(commands), 1)
+                command = commands[0]
+                self.assertNotIn('\n', command)
+                header, pdu = command.split('\r', 1)
+                data = bytes.fromhex(pdu.removesuffix('\x1a'))
+                address_bytes = (data[3] + 1) // 2
+                udl_position = 7 + address_bytes
+                payload = data[udl_position + 1:]
+                self.assertEqual(payload, text.encode('utf-16-be'))
+                self.assertEqual(data[udl_position], len(payload))
+                self.assertEqual(int(re.search(r'CMGS=(\d+)', header)[1]), len(data) - 1)
+
+    def test_trailing_newlines_count_towards_sms_limit_before_any_at(self):
+        result = self.send(text='a' * 69 + '\n\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('71 UCS-2 units', result.stderr)
+        self.assertEqual(self.commands, [])
+
     def test_malformed_or_failed_query_still_submits(self):
         for query in ['ERROR\n', '+CSCA: "evil;AT",145\nOK\n', 'OK\n']:
             self.query = query
@@ -111,6 +141,52 @@ class SmsTransaction(unittest.TestCase):
         self.submit = '+CMS ERROR: 500\n'
         result = self.send()
         self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.channel / 'lock').exists())
+        self.assertFalse((self.root / 'oplock').exists())
+        self.assertIn('+CMS ERROR: 500', result.stderr)
+
+    @unittest.skipUnless(shutil.which('busybox'), 'BusyBox ash required')
+    def test_background_signal_state_preserves_slot_and_transaction(self):
+        # Run both sender and FIFO client in ash, as on OpenWrt; the host's
+        # /bin/sh might be dash and otherwise re-exec the client in bash.
+        client = self.bin / 'mu300-at'
+        client.unlink()
+        client.write_text('#!/bin/sh\nexec busybox ash '+shlex.quote(str(AT))+' "$@"\n')
+        client.chmod(0o755)
+        for ignored, blocked in (([signal.SIGCHLD, signal.SIGPIPE], []),
+                                 ([], [signal.SIGCHLD, signal.SIGALRM]),
+                                 ([signal.SIGINT, signal.SIGQUIT, signal.SIGHUP], [])):
+            def setup():
+                for sig in ignored:
+                    signal.signal(sig, signal.SIG_IGN)
+                signal.pthread_sigmask(signal.SIG_BLOCK, blocked)
+            self.commands.clear()
+            # Forwarding keeps descriptor 8/9 locks open in its parent. The
+            # child may use fd9 for its FIFO, without closing the parent's lock.
+            launch = 'exec 8>'+shlex.quote(str(self.root/'fd8'))+' 9>'+shlex.quote(str(self.root/'fd9'))+'; exec "$@"'
+            result = subprocess.run(['busybox', 'ash', '-c', launch, 'fixture',
+                                     'busybox', 'ash', str(SMS), 'send', '10010', 'fixture'],
+                                    env=dict(self.env, MU300_SIM_SLOT='1'),
+                                    stdin=subprocess.DEVNULL, capture_output=True,
+                                    preexec_fn=setup, start_new_session=True, text=True, timeout=8)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(self.commands), 5)
+            self.assertEqual(len({holder for _, holder in self.commands}), 1)
+            self.assertTrue(all(c.startswith('AT+SPACTCARD=1;') for c, _ in self.commands))
+            self.assertEqual(sum('CMGS=' in c for c, _ in self.commands), 1)
+
+    def test_empty_at_submission_is_reported_without_resending(self):
+        # Interpose a transport failure after the real client has carried all
+        # setup requests; this must not create a sent entry or repeat Ctrl-Z.
+        client = self.bin / 'mu300-at'
+        client.unlink()
+        client.write_text('#!/bin/sh\ncase "$*" in *CMGS=*) exit 7 ;; esac\n'
+                          'exec bash '+shlex.quote(str(AT))+' "$@"\n')
+        client.chmod(0o755)
+        result = self.send()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('no submission acknowledgement (AT exit 7)', result.stderr)
+        self.assertFalse(any('CMGS=' in c for c, _ in self.commands))
         self.assertFalse((self.channel / 'lock').exists())
         self.assertFalse((self.root / 'oplock').exists())
 

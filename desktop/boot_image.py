@@ -55,6 +55,7 @@ def build(base, assets, mode, live, android_slot, prepare=None, identity=None):
            'etc/mu300-desktop-root-mode':((mode+'\n').encode(),stat.S_IFREG|0o644),
            'etc/mu300-desktop-storage.sh':((assets/'storage.sh').read_bytes(),stat.S_IFREG|0o644)}
     files['etc/mu300-internal-ext4.sh']=((assets/'internal-ext4.sh').read_bytes(),stat.S_IFREG|0o644)
+    files['etc/mu300-storage.sh']=((assets/'storage-lib.sh').read_bytes(),stat.S_IFREG|0o644)
     for name in ('part-prepare.sh','part-progress.sh','install-part.sh','ext4-geometry.sh'):
         files['etc/'+name]=((assets/name).read_bytes(),stat.S_IFREG|0o644)
     files['usr/share/mu300-gpt']=((assets/'mu300-gpt').read_bytes(),stat.S_IFREG|0o755)

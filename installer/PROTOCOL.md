@@ -20,7 +20,7 @@ Stages include `uninstall_prepare`, `uninstall_offline`, existing Android setup/
 
 On a paused uninstall, `resume`/`retry` optionally accept an explicitly selected `serial` if the ADB endpoint changed. The new connection must already have Android debugging/root ready and match the original CID, profile and planned Android slot. The coordinator acquires CID/serial ownership before its read-only probe, saves only the transport change and retains the original boot/layout evidence. Connection history uses nested `serial` fields and is redacted from public snapshots. No automatic rebinding or device writes occur during this selection. Imported uninstall snapshots are also revalidated semantically: recomputing checksums cannot authorize changes to NV/unrelated entries, a different root range or suppressing a required reset.
 
-Commands are allowlisted in both Rust and Python: hello, snapshot, list, package, devices, adb_connect, adb_disconnect, probe, probe_update, plan, start, resume, retry, cancel, can_close, export, import, diagnostics, verify_openwrt. There is no shell/exec command. A frontend-selected serial is checked against an actual device. All device ADB operations use that serial; eMMC CID and profile are rechecked after reset. SSH maintenance binds the key fingerprint between planning and execution; final verification binds the hardware CID. A plan cannot become executable without `confirmed:true` on its persisted transaction ID.
+Commands are allowlisted in both Rust and Python: hello, snapshot, list, package, devices, adb_connect, adb_disconnect, probe, probe_update, plan, start, resume, retry, cancel, can_close, export, import, diagnostics, verify_openwrt, online_fallback. There is no shell/exec command. A frontend-selected serial is checked against an actual device. All device ADB operations use that serial; eMMC CID and profile are rechecked after reset. SSH maintenance binds the key fingerprint between planning and execution; final verification binds the hardware CID. A plan cannot become executable without `confirmed:true` on its persisted transaction ID.
 
 `adb_connect` accepts one validated `address` (IPv4, hostname or bracketed IPv6, optional port defaulting to 5555). It invokes only the host ADB connect service, then enumerates devices; readiness comes from that list, never connect-output text. The result contains `endpoint`, `state` and `devices` (with a `wireless` flag). No package verification is needed. During an installation, connection is allowed only at safe Android setup/authorization waits and cannot rebind the transaction. `adb_disconnect` requires an exact observed wireless `serial`, returns the remaining devices, and is rejected while a worker is active. It also acquires the shared serial device mutex, so another installer cannot disconnect a transport in use. It cannot disconnect USB devices or all devices. Neither command enables debugging, runs a device shell, pairs Android, restarts ADB or changes network adapters/routes.
 
@@ -70,3 +70,22 @@ Schema 3 extends schema 2 with `installation_evidence`: hashes of the installed 
 On import/restart, before/after snapshots are recomputed from the saved **current** layout using the adjacent-root rule. Hash changes cannot authorize a wider target or alter unrelated entries. Once armed, resume uses the new uninstall record, not any original installation record or deleted root markers. Recovery from an interrupted inactive-boot write still requires exact saved GPT/misc/Android checks; when boot staging alone must be retried, the original Linux boot proof comes from its checksummed **new uninstall backup** while root evidence is checked live. Completed GPT work and formatting are never replayed. If this new record is lost while `openwrt.uninstall=1` is staged, the existing pending-operation guard still stops new plans; absence of an old installation record is not permission to guess an interrupted removal.
 
 `notice` events carry a fixed localized `code` (`mtp_disabled` or `mtp_disable_failed`) and optional device `label`. Only the MU300 adapter enables the Windows wired-ADB MTP workaround for a selected device; enumeration alone, wireless ADB, macOS and the E5 adapter are unchanged. Windows problem code 22 confirms successful disable. A failure only emits a warning and does not stop the original workflow. MTP is never automatically re-enabled.
+
+
+Online F2FS internal installation (protocol 1 extension): the plan may contain
+`shrink_strategy: online-f2fs`, `new_sectors` (512-byte units), `target_blocks`
+(4096-byte F2FS blocks), and a preserved-data impact. Only the active Android
+kernel resizes the mounted volume. A single detached native worker owns the
+filesystem/GPT commit; ADB loss and cancellation cannot split that operation.
+The host retains original/candidate GPT, UUID, role/boot identity and bounded
+metadata-encryption backup. Known mixed copies resume from readback; unknown
+bytes require recovery. Android is rebooted normally before installation uses
+the reclaimed gap. The original pre-shrink backup remains the uninstall origin.
+
+`online_fallback` accepts only a transaction ID, saved nonce and literal `yes`.
+It is available after a verified unchanged failed attempt, with no active worker.
+It re-probes the selected device and generates a new **unconfirmed** erase-data
+plan; it does not format anything. The UI must show that plan and require normal
+`start` confirmation again. Existing offline and explicitly selected format paths
+are retained. Unsupported initial layouts explain `online_unavailable` in the
+reviewed plan. No automatic erase follows a failed resize or transport error.

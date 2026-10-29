@@ -324,6 +324,8 @@ class Journal(unittest.TestCase):
                 context=self.plan();base=boot(family)
                 root=Path(self.temp.name)/('package-'+family+'-'+slot);(root/'files').mkdir(parents=True)
                 (root/'files/boot.img').write_bytes(base)
+                (root/'desktop').mkdir()
+                (root/'desktop/storage-lib.sh').write_bytes((Path(__file__).resolve().parents[2]/'rootfs/overlay/opt/mu300/lib/storage.sh').read_bytes())
                 self.adapter.root=root
                 self.adapter.legacy=SimpleNamespace(payload_file=lambda root,name:root/'files/boot.img')
                 other='b' if slot=='a' else 'a'
@@ -363,6 +365,13 @@ class Journal(unittest.TestCase):
                 size=struct.unpack_from('<I',generated,12)[0]
                 files={n:b for archive in archives(generated[8192:8192+size]) for n,b,_ in entries(archive)}
                 self.assertIn(b'--wipe_data',files['openwrt-uninstall/recovery-bcb'])
+                helper=files['openwrt-uninstall/storage.sh']
+                self.assertIn(b'mu300_storage_identity()',helper)
+                sums=files['openwrt-uninstall/SHA256SUMS'].decode().splitlines()
+                for row in sums:
+                    digest,name=row.split('  ',1)
+                    self.assertEqual(digest,hashlib.sha256(files['openwrt-uninstall/'+name]).hexdigest())
+                self.assertTrue(any(row.endswith('  storage.sh') for row in sums))
 
     def test_other_device_is_refused_before_layout_or_boot_writes(self):
         context=self.plan();self.adapter.probe=Mock(return_value={**self.device,'cid':'0'*32})
@@ -431,6 +440,7 @@ class OfflineGpt(unittest.TestCase):
                     (path/'size').write_text('8')
                     (path/'start').write_text(str(GIB//512))
                 (folder/'sys/class/block/mmcblk0/device/cid').write_text(IDENTITY)
+                (folder/'sys/class/block/mmcblk0/device/type').write_text('MMC\n')
                 (folder/'sys/class/block/mmcblk0/size').write_text(str(SECTORS))
                 android_node,linux_node=('mmcblk0p1','mmcblk0p2') if slot=='a' else ('mmcblk0p2','mmcblk0p1')
                 android=b'A'*4096;boot_sha=hashlib.sha256(android).hexdigest()
@@ -454,7 +464,8 @@ class OfflineGpt(unittest.TestCase):
                 sums=''.join(hashlib.sha256(path.read_bytes()).hexdigest()+'  '+path.name+'\n'
                              for path in (folder/'work').iterdir())
                 (folder/'work/SHA256SUMS').write_text(sums)
-                worker=WORKER.replace('/openwrt-uninstall',str(folder/'work'))
+                storage_lib=(Path(__file__).resolve().parents[2]/'rootfs/overlay/opt/mu300/lib/storage.sh').read_text()
+                worker=WORKER.replace('. /openwrt-uninstall/storage.sh',storage_lib).replace('/openwrt-uninstall',str(folder/'work'))
                 worker=worker.replace('/sys/',str(folder/'sys')+'/').replace('/dev/',str(folder/'dev')+'/')
                 worker=worker.replace('/proc/self/mountinfo',str(folder/'proc/mountinfo')).replace('/run/',str(folder/'run')+'/')
                 worker=worker.replace('while :; do sleep 10; done','exit "$rc"',1)

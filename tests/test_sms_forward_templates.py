@@ -13,6 +13,14 @@ class ForwardTemplates(ShellTest):
         super().setUp()
         source = FORWARD.read_text(encoding='utf-8')
         self.code = "NL='\n'\n" + source[source.index('template_strings() {'):source.index('sms_units() {')]
+        self.units = source[source.index('sms_units() {'):source.index('deliver() {')]
+
+    def test_sms_units_include_every_newline_and_surrogate_pair(self):
+        for shell in self.each_shell():
+            for body in ('', 'a', '\n', 'a\n', 'a\n\n', '\r\n', '😀\n', 'a' * 69 + '\n\n', '\\n'):
+                result = self.sh(shell, self.units + '\nsms_units "$BODY"', BODY=body)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(int(result.stdout), len(body.encode('utf-16-be')) // 2, repr(body))
 
     def test_sms_body_and_sender_are_preserved_in_every_language(self):
         body = '验证码 123456\nİstanbul şifre: 654321\n$(reboot); "quoted" \\path'

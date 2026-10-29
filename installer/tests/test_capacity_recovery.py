@@ -43,7 +43,7 @@ class CapacityRecovery(unittest.TestCase):
         commands = []
         def read(command, timeout=15):
             commands.append(command)
-            if command == 'cat /sys/class/block/mmcblk0/device/cid':
+            if (command == 'cat /sys/class/block/mmcblk0/device/cid' or command.endswith('d=$(mu300_storage_disk) && mu300_storage_identity "$d"')):
                 value = DEVICE['cid']
             elif command == 'cat /proc/sys/kernel/random/boot_id':
                 value = '22222222-2222-4222-8222-222222222222'
@@ -66,7 +66,7 @@ class CapacityRecovery(unittest.TestCase):
             self.service.run(context, adapter)
         adapter.probe.assert_not_called()
         adapter.execute.assert_not_called()
-        self.assertTrue(all(command.startswith(('cat ', 'readlink -f', 'dd if=', 'test -s '))
+        self.assertTrue(all((command.startswith(('cat ', 'readlink -f', 'dd if=', 'test -s ')) or command.endswith('d=$(mu300_storage_disk) && mu300_storage_identity "$d"'))
                             and 'of=' not in command for command in commands))
         return self.store.load(record['id'])
 

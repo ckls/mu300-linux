@@ -30,7 +30,8 @@ part_fsck() {
 
 install_part_pending() {
     . /etc/part-progress.sh
-    local dev=$1 node=${1##*/} disk=${1%p*}
+    local dev=$1 node=${1##*/} disk
+    disk=/dev/$(mu300_storage_parent "$node") || return 1
     local mp=/part-install img dft lo rc cur target need low hi pstart pend found out ptarget raw want got datafs dataopts shift
     [ -b "$dev" ] || { part_fail 'userdata missing'; return 1; }
     # The request: sizes chosen by flash.py on the Android side.

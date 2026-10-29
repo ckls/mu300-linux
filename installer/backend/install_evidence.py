@@ -4,6 +4,7 @@ Only fixed, small files are read from an idle ext4 partition. No mount, repair,
 device-side helper, executable from the installed system or filesystem write.
 This proves a known installation, not the historical size of Android userdata.
 """
+from . import storage as storage_io
 import hashlib
 import re
 import stat
@@ -152,9 +153,9 @@ def inspect_installation(adapter, device, root, *, boot_backup=None):
     """Return fresh, device-bound evidence. Caller has already validated both GPTs."""
     try:
         adb = adapter.adb
-        storage = device['storage']; disk = storage['NODE'].split('p')[0]
-        node = disk+'p'+str(root['n']); capacity = (root['end']-root['start']+1)*512
-        if (not re.fullmatch(r'mmcblk\d+p\d+',node) or storage.get('ROOT') != node or
+        storage = device['storage']; disk = storage_io.disk_node(storage['NODE'])
+        node = storage_io.part_node(disk,root['n']); capacity = (root['end']-root['start']+1)*512
+        if (not re.fullmatch(r'(?:mmcblk\d+p|sd[a-z]+)[1-9][0-9]*',node) or storage.get('ROOT') != node or
                 storage.get('ROOT_START') != root['start'] or storage.get('ROOT_SIZE')*512 != capacity):
             raise ValueError('Kernel OpenWrt node differs from verified GPT; reboot Android / 内核分区节点与 GPT 不符，请重启 Android')
         # Android must not have the target mounted or mapped. Only metadata in

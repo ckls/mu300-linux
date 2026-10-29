@@ -32,8 +32,6 @@ sh "$TOP/tools/keys/build.sh" "$IN/tools/keys"
 sh "$TOP/tools/atd-io/build.sh" "$IN/tools/atd-io"
 # cltest links against Android's libraries at build time only; use a local build when there is one
 [ -f "$TOP/tools/gpu/cltest" ] && cp "$TOP/tools/gpu/cltest" "$IN/tools/gpu/cltest"
-sh "$TOP/tools/fetch-sing-box.sh" "$IN/sing-box"
-sh "$TOP/tools/fetch-xray.sh" "$IN"
 
 echo "==> kernel bundle"
 K=$D/kernel && mkdir -p "$K"
@@ -71,7 +69,7 @@ for u in 24.04 26.04; do
     cltest=""; [ -f "$IN/tools/gpu/cltest" ] && cltest="-v $IN/tools/gpu/cltest:/cltest:ro"
     # shellcheck disable=SC2086
     docker run --rm -v "$B":/w -v "$IN/out/modules":/kmods:ro -v "$IN/out":/kout:ro -v "$IN/tools/logdw/logdw":/logdw:ro \
-      -v "$IN/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$IN/tools/keys/mu300-keys":/keys:ro -v "$IN/tools/atd-io/mu300-atd-io":/atd-io:ro -v "$IN/sing-box":/sing-box:ro -v "$IN/xray":/xray:ro -v "$IN/hev-socks5-tunnel":/hev-socks5-tunnel:ro $cltest \
+      -v "$IN/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$IN/tools/keys/mu300-keys":/keys:ro -v "$IN/tools/atd-io/mu300-atd-io":/atd-io:ro $cltest \
       -e MU300_VERSION="$TAG" mu300-ubuntu:$u bash /w/assemble.sh >/dev/null
     out=mu300-ubuntu-rootfs.tar.gz; [ $u = 24.04 ] || out=mu300-ubuntu-$u-rootfs.tar.gz
     mv "$B/mu300-ubuntu-$u-rootfs.tar.gz" "$D/$out"; rm -rf "$B"
@@ -134,7 +132,7 @@ for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2 mu300-ubuntu-rootfs mu3
         -e '(^|/)lib/firmware/(wcnmodem|gnssmodem|wifi_board_config|bt_configure)' \
         -e '^opt/mu300/android/.+' -e '__properties__|dev-properties' \
         -e '(^|/)(libmali|libOpenCL|libGLES|libEGL|libvulkan)[^/]*\.so' \
-        -e '^etc/uhttpd\.key$' -e '^etc/ssh/ssh_host_' -e '^etc/mu300/(hotspot|vpn|toolkit)\.conf$' -e '^etc/dropbear/dropbear_.*_host_key' \
+        -e '^etc/uhttpd\.key$' -e '^etc/ssh/ssh_host_' -e '^etc/mu300/(hotspot|toolkit)\.conf$' -e '^etc/dropbear/dropbear_.*_host_key' \
         | grep -vE '^opt/mu300/android/system/?$|^opt/mu300/android/system/bin/?$|^opt/mu300/android/system/bin/cltest$' || true)
     if [ -n "$bad" ]; then echo "$a contains files that must not be published:"; echo "$bad" | head -20; fail=1; fi
     mid=$(tar -xzOf "$D/$a.tar.gz" ./etc/machine-id 2>/dev/null || true)
@@ -172,9 +170,7 @@ modem/GPU userspace from your own device and adds them during installation.
 Built from $REPO@$commit with \`kernel/build-all.sh\` and \`tools/make-release.sh\`.
 Corresponding source (GPL): kernel https://github.com/Enceka/android_kernel_zte_ums9620_mifi_u30air/tree/$kernel_rev ,
 Wi-Fi/Bluetooth/Mali modules https://github.com/realme-kernel-opensource/realme_C51_C53_Narzo-N53-AndroidT-kernel-source/tree/$modules_rev ,
-patches in \`kernel/patches\`. Ubuntu, OpenWrt and busybox packages come from their distributions' archives;
-sing-box from https://github.com/SagerNet/sing-box/releases, Xray from https://github.com/XTLS/Xray-core/releases,
-hev-socks5-tunnel from https://github.com/heiher/hev-socks5-tunnel/releases.
+patches in \`kernel/patches\`. Ubuntu, OpenWrt and busybox packages come from their distributions' archives.
 EOF
 if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
     gh release upload "$TAG" -R "$REPO" --clobber "$D"/*.tar.gz "$D/mu300-update" "$D/SHA256SUMS"

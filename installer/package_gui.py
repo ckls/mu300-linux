@@ -19,6 +19,9 @@ def digest(path):
 def sources():
     paths = [HERE/n for n in ('backend_entry.py','build.py','package_gui.py','platform-tools.json','platform-tools-macos.json','GUIDE.md','ota-tool.py','stage-ota.py','build-ota.py','ota-requirements.txt')]
     paths += list((HERE/'backend').glob('*.py'))
+    paths += [HERE.parent/'rootfs/overlay/opt/mu300/lib/storage.sh']
+    paths += [HERE/'device'/n for n in ('f2fs-online.c','test-f2fs-online.c','f2fs-online-arm64','build.json')]
+    paths += [HERE/'build-online-helper.py']
     paths += list((HERE.parent/'openwrt/luci-app-unisoc-ota/root/usr/lib/unisoc-ota').glob('*.py'))
     paths += [HERE.parent/'openwrt/luci-app-unisoc-ota/root/usr/lib/unisoc-ota/proxy.sh']
     paths += list((HERE/'ota-native').glob('*'))

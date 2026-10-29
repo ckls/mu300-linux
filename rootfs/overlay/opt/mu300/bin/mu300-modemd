@@ -258,7 +258,9 @@ io_connect = function() {
 
 // ------------------------------------------------------------------ requests (mu300-at's protocol)
 const LF = '\n', CR = '\r', SUB = '\x1a';
-// one_request CMD: exactly one modem command - no line feed, and a CR only in "AT+CMGS=<length><CR><hex PDU><Ctrl-Z>"
+// one_request CMD: no line feed; an embedded CR is only a PDU submission,
+// optionally prefixed by the sender's atomic SIM selection. Keep the prefix
+// on the wire: stripping it would submit on whichever SIM last owned the port.
 function one_request(cmd) {
 	if (index(cmd, LF) >= 0)
 		return false;
@@ -266,7 +268,7 @@ function one_request(cmd) {
 	if (c < 0)
 		return true;
 	let head = substr(cmd, 0, c), body = substr(cmd, c + 1);
-	if (!match(head, /^AT\+CMG[SW]=[0-9]{1,3}$/))
+	if (!match(head, /^AT(\+SPACTCARD=[01];)?\+CMG[SW]=[0-9]{1,3}$/))
 		return false;
 	if (substr(body, -1) != SUB)
 		return false;

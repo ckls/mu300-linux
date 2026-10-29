@@ -790,14 +790,24 @@ static int sipa_fill_recv_thread(void *data)
 	sched_setscheduler(current, SCHED_RR, &param);
 
 	while (!kthread_should_stop()) {
-		wait_event_interruptible(receiver->fill_recv_waitq,
-					 sipa_check_need_fill_cnt());
+		if (wait_event_interruptible(receiver->fill_recv_waitq,
+				kthread_should_stop() ||
+				(!READ_ONCE(receiver->init_flag) &&
+				 sipa_check_need_fill_cnt())))
+			continue;
+		if (kthread_should_stop())
+			break;
 
 		if (sipa_fill_all_free_fifo())
 			usleep_range(1000, 2000);
 	}
 
 	return 0;
+}
+
+static void sipa_stop_receiver_thread(void *data)
+{
+	kthread_stop(data);
 }
 
 int sipa_receiver_prepare_suspend(struct sipa_skb_receiver *receiver)
@@ -844,7 +854,8 @@ int sipa_receiver_prepare_resume(struct sipa_skb_receiver *receiver)
 {
 	atomic_set(&receiver->check_suspend, 0);
 
-	wake_up_process(receiver->fill_recv_thread);
+	WRITE_ONCE(receiver->init_flag, false);
+	wake_up(&receiver->fill_recv_waitq);
 
 	return sipa_hal_cmn_fifo_stop_recv(receiver->dev,
 					   receiver->ep->recv_fifo.idx,
@@ -899,6 +910,7 @@ int sipa_create_skb_receiver(struct sipa_plat_drv_cfg *ipa,
 			     struct sipa_skb_receiver **receiver_pp)
 {
 	struct sipa_skb_receiver *receiver = NULL;
+	int ret;
 
 	dev_info(ipa->dev, "ep->id = %d start\n", ep->id);
 	receiver = devm_kzalloc(ipa->dev,
@@ -910,15 +922,17 @@ int sipa_create_skb_receiver(struct sipa_plat_drv_cfg *ipa,
 	receiver->ep = ep;
 	receiver->rsvd = SIPA_RECV_RSVD_LEN;
 
-	sipa_init_recv_array(receiver,
-			     receiver->ep->recv_fifo.rx_fifo.fifo_depth);
+	ret = sipa_init_recv_array(receiver,
+				   receiver->ep->recv_fifo.rx_fifo.fifo_depth);
+	if (ret)
+		return ret;
 
 	spin_lock_init(&receiver->lock);
 
 	init_waitqueue_head(&receiver->fill_recv_waitq);
 	sipa_receiver_init(receiver, SIPA_RECV_RSVD_LEN);
 
-	receiver->fill_recv_thread = kthread_create(sipa_fill_recv_thread,
+	receiver->fill_recv_thread = kthread_run(sipa_fill_recv_thread,
 						    receiver,
 						    "sipa-fill-recv-%d",
 						    ep->id);
@@ -928,6 +942,10 @@ int sipa_create_skb_receiver(struct sipa_plat_drv_cfg *ipa,
 			ep->id);
 		return PTR_ERR(receiver->fill_recv_thread);
 	}
+	ret = devm_add_action_or_reset(ipa->dev, sipa_stop_receiver_thread,
+				       receiver->fill_recv_thread);
+	if (ret)
+		return ret;
 
 	*receiver_pp = receiver;
 	return 0;

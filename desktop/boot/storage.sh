@@ -1,13 +1,12 @@
 # Desktop-only storage policy; this file is never added to the Magisk boot.
+. /etc/mu300-storage.sh
 desktop_part() {
-    local match= u
-    for u in /sys/class/block/mmcblk*p*/uevent; do
-        grep -qx "PARTNAME=$1" "$u" 2>/dev/null || continue
-        [ -z "$match" ] || return 1
-        match=/dev/$(basename "$(dirname "$u")")
-    done
-    [ -n "$match" ] && echo "$match"
+    local disk node
+    disk=$(mu300_storage_disk) || return 1
+    node=$(mu300_storage_part "$1" "$disk") || return 1
+    printf '/dev/%s\n' "$node"
 }
+
 desktop_storage_start() {
     DESKTOP_MODE=$(cat /etc/mu300-desktop-root-mode)
     DESKTOP_LINUX_BC=/etc/misc-bc-slot-b-trial.bin
@@ -29,7 +28,7 @@ desktop_storage_start() {
             local d identity cid node start before target actual
             d=$(desktop_part userdata) || { part_fail 'userdata identity'; return 1; }
             IFS=: read -r cid node start before target < /etc/mu300-desktop-identity
-            [ "$d" = "/dev/$node" ] && [ "$cid" = "$(cat /sys/class/block/${node%p*}/device/cid)" ] &&
+            [ "$d" = "/dev/$node" ] && [ "$cid" = "$(mu300_storage_identity "$(mu300_storage_parent "$node")")" ] &&
                 [ "$start" = "$(cat /sys/class/block/$node/start)" ] || { part_fail 'wrong installation device'; return 1; }
             actual=$(cat /sys/class/block/$node/size)
             [ "$actual" = "$before" ] || [ "$actual" = "$target" ] || { part_fail 'userdata geometry changed'; return 1; }

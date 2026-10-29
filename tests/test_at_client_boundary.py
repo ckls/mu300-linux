@@ -109,6 +109,12 @@ class ATClientBoundary(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertLess(time.monotonic() - started, 3.5)
         self.assertFalse((self.root / 'lock').exists())
+        self.assertIn(b'no answer from the daemon', result.stderr)
+
+    def test_incomplete_daemon_answer_has_a_diagnostic(self):
+        result = self.exchange('AT', b'')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'modem returned no final response', result.stderr)
 
     def test_zero_lock_wait_never_steals_a_live_owner(self):
         lock = self.root / 'lock'; lock.mkdir()

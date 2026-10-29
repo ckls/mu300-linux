@@ -38,8 +38,9 @@ class ReadOnlyAdb:
         self.commands.append(script)
         if script=='cat /proc/sys/kernel/random/boot_id':return 'boot-fixture'
         if script=='settings get secure user_setup_complete':return '1'
-        if script.startswith('set -e; d='):
+        if 'echo NODE=$n' in script:
             return f'NODE=mmcblk1p16\nCID={CID}\nSTART=2048\nSIZE=33554432\nDISK_SIZE=134217728\nFREE=12582912\nSOURCE=/dev/block/mmcblk1p16\nROOT=mmcblk1p20\n'+('TF=/dev/block/mmcblk0p1\n' if self.card else '')
+        if script.startswith('cards='):return '/dev/block/mmcblk0p1' if self.card else ''
         if script=='cat /sys/class/block/mmcblk1p20/start /sys/class/block/mmcblk1p20/size':return '33556480 8388608'
         if script=='test -b /dev/block/mmcblk0p1; echo $?':return '0'
         if script=='cat /sys/class/block/mmcblk0p1/size':return '16777216'

@@ -39,6 +39,8 @@ def main():
     mac = target == 'macos-arm64'
     if mac:
         os.environ.setdefault('MACOSX_DEPLOYMENT_TARGET', '11.0')
+    from backend.online_shrink import helper_files
+    helper_files()  # reject missing/stale native input before freezing a backend
     before = sources()
     npm = 'npm' if mac else 'npm.cmd'
     if not a.skip_ui:
@@ -58,6 +60,9 @@ def main():
         '--add-data', str(HERE.parent/'openwrt/luci-app-unisoc-ota/htdocs/luci-static/resources/unisoc-ota/errors.js')+os.pathsep+'.',
         '--add-data', str(HERE.parent/'openwrt/luci-app-unisoc-ota/root/usr/share/rpcd/acl.d/unisoc-ota.json')+os.pathsep+'.',
         '--add-data', str(HERE/'ota-native/lz4raw-aarch64.so')+os.pathsep+'.',
+        '--add-data',str(HERE.parent/'rootfs/overlay/opt/mu300/lib/storage.sh')+os.pathsep+'.',
+        '--add-data', str(HERE/'device/f2fs-online-arm64')+os.pathsep+'.',
+        '--add-data', str(HERE/'device/build.json')+os.pathsep+'online-helper',
         '--collect-all','paramiko','--collect-all','dissect.extfs',HERE/'backend_entry.py')
     artifact = HERE/('artifacts/macos-arm64' if mac else 'artifacts/windows')
     artifact.mkdir(parents=True,exist_ok=True)

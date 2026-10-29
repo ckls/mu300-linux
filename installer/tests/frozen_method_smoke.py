@@ -32,8 +32,10 @@ def child(package):
                 return 'test-boot'
             if script == 'settings get secure user_setup_complete':
                 return '1'
-            if script.startswith('set -e; d='):
+            if 'echo NODE=$n' in script:
                 return 'NODE=mmcblk1p16\nCID=' + 'b' * 32 + '\nSTART=2048\nSIZE=33554432\nDISK_SIZE=134217728\nFREE=12582912\nSOURCE=/dev/block/mmcblk1p16\nROOT=mmcblk1p20\n'
+            if script.startswith('cards='):
+                return ''
             if script == 'cat /sys/class/block/mmcblk1p20/start /sys/class/block/mmcblk1p20/size':
                 return '33556480 8388608'
             raise AssertionError('Unexpected simulated read')

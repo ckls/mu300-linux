@@ -1,6 +1,7 @@
 """A default image must not inherit optional VPN engines or stale menu entries."""
 import hashlib
 import io
+import json
 from pathlib import Path
 import runpy
 import subprocess
@@ -49,3 +50,22 @@ class NoVpn(unittest.TestCase):
             self.assertNotIn('$(opt '+name+' ',text)
             self.assertNotIn('cp /in/'+name,text)
         self.assertIn('python3 "$TOP/openwrt/no-vpn-payload.py"',text)
+
+    def test_streaming_cleanup_preserves_upstream_theme_and_removes_empty_menu(self):
+        with tempfile.TemporaryDirectory() as directory:
+            p=Path(directory)/'rootfs.tar.gz'
+            theme='www/luci-static/aurora/patches/admin-services-openclash-config.css'
+            menu='usr/share/luci/menu.d/luci-base.json'
+            self.archive(p,{theme:b'upstream theme bytes',menu:b'{"admin/vpn":{"title":"VPN"},"admin/network":{"title":"Network"}}'})
+            policy['strip'](p)
+            with tarfile.open(p) as tar:
+                self.assertEqual(tar.extractfile(theme).read(),b'upstream theme bytes')
+                self.assertEqual(json.loads(tar.extractfile(menu).read()),{'admin/network':{'title':'Network'}})
+
+    def test_project_actions_and_default_toolkit_do_not_offer_removed_service(self):
+        app=ROOT/'openwrt/luci-app-mu300/root'
+        for name in ('usr/libexec/unisoc-modem/action','usr/libexec/rpcd/mu300dash','usr/share/ucode/mu300/dash.uc'):
+            text=(app/name).read_text()
+            self.assertNotIn('mu300-vpn',text)
+            self.assertNotIn('vpn:',text)
+        self.assertFalse((ROOT/'openwrt/overlay/etc/init.d/mu300-vpn').exists())

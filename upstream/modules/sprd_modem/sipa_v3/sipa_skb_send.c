@@ -273,12 +273,27 @@ static int sipa_free_thread(void *data)
 
 	sched_setscheduler(current, SCHED_RR, &param);
 	while (!kthread_should_stop()) {
-		wait_event_interruptible(sender->free_waitq,
-					 !sipa_sender_ck_unfree(sender) ||
-					 sender->free_notify_net);
+		/* Start the task at probe, but leave the hardware untouched until
+		 * the original resource-resume path enables it. An unwoken
+		 * kthread_create() task otherwise remains in D state indefinitely
+		 * when no SIM registers (and pollutes load/hung-task accounting).
+		 */
+		if (wait_event_interruptible(sender->free_waitq,
+				kthread_should_stop() ||
+				(!READ_ONCE(sender->init_flag) &&
+				 (!sipa_sender_ck_unfree(sender) ||
+				  sender->free_notify_net))))
+			continue;
+		if (kthread_should_stop())
+			break;
 		sipa_free_sent_items();
 	}
 	return 0;
+}
+
+static void sipa_stop_sender_thread(void *data)
+{
+	kthread_stop(data);
 }
 
 static int sipa_skb_sender_init(struct sipa_skb_sender *sender)
@@ -338,9 +353,9 @@ int sipa_sender_prepare_suspend(struct sipa_skb_sender *sender)
 int sipa_sender_prepare_resume(struct sipa_skb_sender *sender)
 {
 	atomic_set(&sender->check_suspend, 0);
-	if (unlikely(sender->init_flag)) {
-		wake_up_process(sender->free_thread);
-		sender->init_flag = false;
+	if (unlikely(READ_ONCE(sender->init_flag))) {
+		WRITE_ONCE(sender->init_flag, false);
+		wake_up(&sender->free_waitq);
 	}
 
 	return 0;
@@ -369,7 +384,6 @@ int sipa_create_skb_sender(struct sipa_plat_drv_cfg *ipa,
 		dev_err(ipa->dev,
 			"alloc sender pair_cache err rx depth = 0x%x\n",
 			ep->send_fifo.rx_fifo.fifo_depth);
-		kfree(sender);
 		return -ENOMEM;
 	}
 
@@ -388,21 +402,23 @@ int sipa_create_skb_sender(struct sipa_plat_drv_cfg *ipa,
 
 	atomic_set(&sender->left_cnt, ep->send_fifo.rx_fifo.fifo_depth);
 
-	/* reigster sender ipa event callback */
-	sipa_skb_sender_init(sender);
-
 	init_waitqueue_head(&sender->free_waitq);
 
-	sender->free_thread = kthread_create(sipa_free_thread, sender,
+	/* Register callbacks only after their wait queue is initialized. */
+	sipa_skb_sender_init(sender);
+
+	sender->free_thread = kthread_run(sipa_free_thread, sender,
 					     "sipa-free-%d", ep->id);
 	if (IS_ERR(sender->free_thread)) {
 		dev_err(sender->dev, "Failed to create kthread: sipa-free-%d\n",
 			ep->id);
 		ret = PTR_ERR(sender->free_thread);
-		kfree(sender->pair_cache);
-		kfree(sender);
 		return ret;
 	}
+	ret = devm_add_action_or_reset(ipa->dev, sipa_stop_sender_thread,
+				       sender->free_thread);
+	if (ret)
+		return ret;
 
 	*sender_pp = sender;
 
@@ -411,8 +427,10 @@ int sipa_create_skb_sender(struct sipa_plat_drv_cfg *ipa,
 
 void destroy_sipa_skb_sender(struct sipa_skb_sender *sender)
 {
-	kfree(sender->pair_cache);
-	kfree(sender);
+	devm_release_action(sender->dev, sipa_stop_sender_thread,
+			    sender->free_thread);
+	devm_kfree(sender->dev, sender->pair_cache);
+	devm_kfree(sender->dev, sender);
 }
 
 void sipa_skb_sender_add_nic(struct sipa_skb_sender *sender,

@@ -34,9 +34,12 @@ mark vendor-props
 # Two ln calls per partition plus basename/sed/dirname is about 365 fork()s over the 73 partitions (measured:
 # 0.64 s, all of it on the boot path between the CP being released and the modem being asked to start).
 # Take the path and PARTNAME in the shell itself and keep only the ln calls.
-for u in /sys/class/block/mmcblk0p*/uevent; do
+. /opt/mu300/lib/storage.sh
+internal_disk=$(mu300_storage_disk) || exit 4
+for u in /sys/class/block/${internal_disk}*/uevent; do
     [ -e "$u" ] || continue
     d=${u%/uevent}; d=${d##*/}
+    case "$d" in "${internal_disk}"p[0-9]*|"${internal_disk}"[0-9]*) ;; *) continue ;; esac
     n=
     while IFS='=' read -r k v; do [ "$k" = PARTNAME ] && n=$v; done < "$u"
     ln -sfn /dev/$d /dev/block/$d

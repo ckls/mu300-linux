@@ -857,6 +857,7 @@ var DASH_I18N = {
 	'锁定': ['Lock', 'Kilitle'],
 	'已运行': ['Uptime', 'Çalışma süresi'],
 	'无线电已关': ['Radio off', 'Radyo kapalı'],
+	'未插卡': ['No SIM card', 'SIM kart takılı değil'],
 	'未驻留小区': ['No serving cell', 'Bağlı olunan hücre yok'],
 	'无应答': ['No response', 'Yanıt yok'],
 	'信号': ['Signal', 'Sinyal'],

@@ -18,7 +18,7 @@ class ForwardHistory(ShellTest):
     def setUp(self):
         super().setUp()
         text = FORWARD.read_text()
-        self.code = '\n'.join([
+        self.code = "NL='\n'\n" + '\n'.join([
             text[text.index('number() {'):text.index('bool() {')],
             text[text.index('load_state() {'):text.index('save_config() {')],
             text[text.index('write_result() {'):text.index('read_result() {')],
@@ -27,6 +27,27 @@ class ForwardHistory(ShellTest):
             'deliver() { printf "%s\\n" "$3" >> "$DELIVERIES"; DELIVER_RESULT=sent; }',
         ])
         self.barrier = epoch('2026-10-07T12:00:00+08:00')
+
+    def test_spooled_multiline_body_reaches_forwarder_without_losing_blank_lines(self):
+        for index, shell in enumerate(self.each_shell()):
+            for n, body in enumerate(('first\nsecond', '\nfirst\n\nlast\n\n',
+                                      'a\r\nb\r\n', '\n', 'trailing dot.\n')):
+                base = self.tmp / f'body-{index}-{n}'
+                pool = base / 'pool'
+                (pool / 'msg').mkdir(parents=True)
+                (pool / 'msg/000001').write_bytes((
+                    'dir: mt\nfrom: 10010\nsource: direct\ncoding: pdu\n'
+                    f'received: {self.barrier + 500}\nscts: old\n\n{body}\n').encode())
+                (pool / 'next_id').write_text('1\n')
+                state = base / 'state'
+                state.write_text(f'0|{self.barrier}|-1|none\n')
+                env = dict(BASE=base, POOL=pool, STATE=state, RESULT=base / 'result',
+                           DELIVERIES=base / 'sent', enabled=1, power_last_result='idle',
+                           blacklist_phone='', blacklist_keywords='')
+                run = self.code + '\ndeliver() { printf "%s" "$3" > "$DELIVERIES"; DELIVER_RESULT=sent; }\nload_state\nprocess_sms'
+                result = self.sh(shell, run, **env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((base / 'sent').read_bytes(), body.encode())
 
     def test_timestamp_offsets_and_calendar_independent_of_host_timezone(self):
         cases = [

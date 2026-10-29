@@ -25,7 +25,7 @@ desktop helpers and ADB in `desktop/` and `tools/`.
 | start-installer | Choose a method |
 | install-to-tf-card | Original TF worker; format the first TF partition, or the whole unpartitioned card |
 | install-to-userdata-image | EXPERIMENTAL plaintext userdata image; may damage Android F2FS |
-| install-to-internal-storage | Independent `mu300root`; use unallocated eMMC first, otherwise offline userdata shrink |
+| install-to-internal-storage | Independent `mu300root`; use unallocated internal storage first, otherwise offline userdata shrink |
 | reinstall-internal-system | Erase and reinstall only existing `mu300root` |
 | resume-internal-install | Continue after encrypted-data preparation and Android reset |
 | switch-to-openwrt | Verify misc and restart into installed Linux |

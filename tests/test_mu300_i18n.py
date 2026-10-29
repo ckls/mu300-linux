@@ -69,6 +69,15 @@ const M = new Function('rpc', 'baseclass', 'L', 'document', 'navigator', 'getCom
         result = subprocess.run(['node', '-', str(COMMON)], input=harness, capture_output=True, text=True, encoding='utf-8')
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_sim_presence_translations(self):
+        self.run_js("""
+for (const [locale, expected] of [['en','No SIM card'],['tr','SIM kart takılı değil']]) {
+    lang=locale;
+    if (M.translate('未插卡')!==expected) throw Error('SIM translation: '+locale);
+    if (M.translate('无线电已关')==='无线电已关') throw Error('RF translation: '+locale);
+}
+""")
+
     def test_battery_current_preserves_real_sign_zero_and_unavailable_values(self):
         self.run_js("""
 for (const [raw, expected] of [[260000,'+260mA'],[-570000,'-570mA'],[0,'0mA'],
